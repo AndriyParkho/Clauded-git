@@ -1,0 +1,8 @@
+node_modules/
+dist/
+spike/out/
+.claude/.cc-writes/
+.claude/settings.local.json
+.env*
+*.log
+.DS_Store
