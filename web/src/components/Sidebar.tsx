@@ -1,7 +1,8 @@
 import type { ReactElement } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useStore } from '../store';
+import { send } from '../ws';
 import type { RateWindow, Repo, SessionHistoryItem } from '../../../shared/protocol';
 
 const PAGE = 8;
@@ -15,49 +16,91 @@ function timeAgo(timestamp: number): string {
     return `il y a ${Math.round(hours / 24)} j`;
 }
 
-function resetIn(iso: string | null): string {
-    if (!iso) return '';
-    const minutes = Math.round((new Date(iso).getTime() - Date.now()) / 60_000);
+function resetIn(target: Date): string {
+    const minutes = Math.round((target.getTime() - Date.now()) / 60_000);
     if (minutes <= 0) return 'maintenant';
-    if (minutes < 60) return `${minutes} min`;
+    if (minutes < 60) return `dans ${minutes} min`;
     const hours = Math.floor(minutes / 60);
-    if (hours < 48) return `${hours} h ${String(minutes % 60).padStart(2, '0')}`;
-    return `${Math.round(hours / 24)} j`;
+    if (hours < 48) return `dans ${hours} h ${String(minutes % 60).padStart(2, '0')}`;
+    return `dans ${Math.floor(hours / 24)} j ${hours % 24} h`;
 }
 
-function Gauge({ label, window }: { label: string; window: RateWindow | undefined }): ReactElement | null {
-    if (!window || window.utilization === null) return null;
-    const percent = Math.round(window.utilization * (window.utilization <= 1 ? 100 : 1));
-    const level = percent >= 85 ? 'error' : percent >= 65 ? 'warn' : '';
+/** « 18:30 » si c'est aujourd'hui, sinon « mar. 18 nov. 09:00 ». */
+function resetDate(target: Date): string {
+    const time = target.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    if (target.toDateString() === new Date().toDateString()) return time;
+    return `${target.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })} ${time}`;
+}
+
+/** Re-rendu périodique pour que les comptes à rebours restent justes. */
+function useTick(ms: number): void {
+    const [, setTick] = useState(0);
+    useEffect(() => {
+        const timer = setInterval(() => setTick((t) => t + 1), ms);
+        return () => clearInterval(timer);
+    }, [ms]);
+}
+
+function Gauge({ window }: { window: RateWindow }): ReactElement {
+    // `utilization` est déjà un pourcentage (0-100).
+    const percent = window.utilization === null ? null : Math.round(window.utilization);
+    const level = percent === null ? '' : percent >= 85 ? 'error' : percent >= 65 ? 'warn' : '';
+    const reset = window.resetsAt ? new Date(window.resetsAt) : null;
     return (
-        <div className="gauge" title={window.resetsAt ? `réinitialisation dans ${resetIn(window.resetsAt)}` : undefined}>
-            <span className="gauge-label">{label}</span>
-            <span className="gauge-bar">
-                <span className={`gauge-fill ${level}`} style={{ width: `${Math.min(percent, 100)}%` }} />
-            </span>
-            <span className={`gauge-value ${level}`}>{percent} %</span>
+        <div className="gauge-row">
+            <div className="gauge">
+                <span className="gauge-label">{window.label}</span>
+                <span className="gauge-bar">
+                    <span className={`gauge-fill ${level}`} style={{ width: `${Math.min(percent ?? 0, 100)}%` }} />
+                </span>
+                <span className={`gauge-value ${level}`}>{percent === null ? '—' : `${percent} %`}</span>
+            </div>
+            {reset && (
+                <div className="gauge-reset muted" title={reset.toLocaleString('fr-FR')}>
+                    reset {resetDate(reset)} · {resetIn(reset)}
+                </div>
+            )}
         </div>
     );
 }
 
-function Usage(): ReactElement | null {
-    const limits = useStore((s) => s.limits);
-    if (!limits?.limits) return null;
-    const { fiveHour, sevenDay, sevenDayOpus, sevenDaySonnet, extra } = limits.limits;
+function Usage(): ReactElement {
+    const account = useStore((s) => s.account);
+    const [refreshing, setRefreshing] = useState(false);
+    useTick(30_000);
+    useEffect(() => setRefreshing(false), [account]);
+
+    const refresh = (): void => {
+        setRefreshing(true);
+        send({ type: 'refreshAccount' });
+        // Filet si la réponse ne vient pas (serveur déconnecté) : le bouton redevient cliquable.
+        setTimeout(() => setRefreshing(false), 35_000);
+    };
+
     return (
         <div className="usage">
-            <div className="sidebar-section">Consommation{limits.subscription ? ` · ${limits.subscription}` : ''}</div>
-            <Gauge label="5 h" window={fiveHour} />
-            <Gauge label="7 j" window={sevenDay} />
-            <Gauge label="7 j Opus" window={sevenDayOpus} />
-            <Gauge label="7 j Sonnet" window={sevenDaySonnet} />
-            {extra?.enabled && (
+            <div className="usage-head">
+                <span className="sidebar-section">Consommation{account?.subscription ? ` · ${account.subscription}` : ''}</span>
+                <button className="small" onClick={refresh} disabled={refreshing} title="Relire la consommation maintenant">
+                    {refreshing ? '…' : '↻'}
+                </button>
+            </div>
+            {!account && <div className="muted gauge-note">lecture en cours…</div>}
+            {account && !account.available && !account.error && <div className="muted gauge-note">pas de limites de forfait (clé d'API, Bedrock ou Vertex)</div>}
+            {account?.windows.map((window) => <Gauge key={window.label} window={window} />)}
+            {account?.extra && (
                 <div className="muted gauge-note">
-                    extra : {extra.used ?? 0}
-                    {extra.limit !== null ? ` / ${extra.limit}` : ''}
+                    extra : {account.extra.used ?? 0}
+                    {account.extra.limit !== null ? ` / ${account.extra.limit}` : ''}
+                    {account.extra.currency ? ` ${account.extra.currency}` : ''}
                 </div>
             )}
-            <div className="muted gauge-note">mis à jour {timeAgo(new Date(limits.at).getTime())}</div>
+            {account?.error && (
+                <div className="error gauge-note" title={account.error}>
+                    lecture impossible : {account.error}
+                </div>
+            )}
+            {account && <div className="muted gauge-note">mis à jour {timeAgo(new Date(account.at).getTime())}</div>}
         </div>
     );
 }

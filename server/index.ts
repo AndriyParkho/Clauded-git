@@ -3,8 +3,11 @@ import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
+import { watchBatches } from './batch.js';
 import { HOST, PORT } from './config.js';
 import { resetRunStates } from './db.js';
+import { jobs } from './jobs.js';
+import { reviewWatcher } from './review.js';
 import { registerRoutes } from './routes.js';
 import { sessions } from './sessions/manager.js';
 import { registerWebSocket, wireSessionEvents } from './ws.js';
@@ -14,7 +17,8 @@ const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'warn' } });
 resetRunStates();
 wireSessionEvents();
 
-await app.register(fastifyWebsocket);
+// Les prompts peuvent contenir des images en base64 : plafond large.
+await app.register(fastifyWebsocket, { options: { maxPayload: 64 * 1024 * 1024 } });
 await registerWebSocket(app);
 await registerRoutes(app);
 
@@ -30,10 +34,15 @@ if (existsSync(webDist)) {
 
 const shutdown = (): void => {
     sessions.closeAll();
+    reviewWatcher.stop();
+    jobs.stopAll();
     void app.close().finally(() => process.exit(0));
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
 await app.listen({ host: HOST, port: PORT });
+sessions.startAccountPolling();
+await reviewWatcher.start();
+watchBatches();
 console.log(`Clauded GIT : http://${HOST}:${PORT}${existsSync(webDist) ? '' : '  (UI : lance aussi vite, ou npm run dev)'}`);

@@ -63,7 +63,7 @@ export async function ensureWorktreesExcluded(repoPath: string): Promise<void> {
  * Crée (ou retrouve) un worktree sur une branche. La branche distante doit exister ; la branche
  * locale est créée en la suivant si besoin.
  */
-export async function addWorktree(repoPath: string, branch: string, path: string): Promise<{ created: boolean }> {
+export async function addWorktree(repoPath: string, branch: string, path: string, onStep?: (step: 'fetch' | 'add') => void): Promise<{ created: boolean }> {
     const existing = (await listWorktrees(repoPath)).find((w) => resolve(w.path) === resolve(path));
     if (existing) {
         if (existing.branch !== branch) throw new Error(`${path} existe déjà sur la branche ${existing.branch ?? '(détachée)'}, pas ${branch}`);
@@ -71,7 +71,9 @@ export async function addWorktree(repoPath: string, branch: string, path: string
     }
     const elsewhere = (await listWorktrees(repoPath)).find((w) => w.branch === branch);
     if (elsewhere) throw new Error(`la branche ${branch} est déjà sortie dans ${elsewhere.path}`);
+    onStep?.('fetch');
     await gitOk(repoPath, ['fetch', 'origin', branch]);
+    onStep?.('add');
     if (await localBranchExists(repoPath, branch)) await gitOk(repoPath, ['worktree', 'add', path, branch]);
     else await gitOk(repoPath, ['worktree', 'add', '--track', '-b', branch, path, `origin/${branch}`]);
     return { created: true };

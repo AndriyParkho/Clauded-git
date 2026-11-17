@@ -11,8 +11,9 @@ import {
     type SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
 import { getRun, updateRun } from '../db.js';
+import { probeUsage, readUsage } from './account.js';
 import { PromptQueue, sessionOptions } from './options.js';
-import type { AskRequest, ModelChoice, PermissionEvent, RateWindow, Run, SlashCommandInfo, UsageInfo } from '../../shared/protocol.js';
+import type { AccountUsage, AskRequest, ImageAttachment, McpAction, McpServerInfo, McpStatus, ModelChoice, PermissionEvent, Run, SlashCommandInfo, UsageInfo } from '../../shared/protocol.js';
 
 /** Outils dont l'appel est une question à l'utilisateur, à afficher comme une carte dans le chat. */
 const ASK_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
@@ -32,6 +33,7 @@ interface Live {
 
 export interface ManagerEvents {
     sdk: [runId: number, message: SDKMessage];
+    mcp: [status: McpStatus];
     run: [run: Run];
     ask: [ask: AskRequest];
     askResolved: [runId: number, requestId: string];
@@ -39,6 +41,7 @@ export interface ManagerEvents {
     commands: [runId: number, commands: SlashCommandInfo[]];
     models: [runId: number, models: ModelChoice[]];
     usage: [usage: UsageInfo];
+    account: [account: AccountUsage];
     error: [runId: number | undefined, message: string];
 }
 
@@ -63,9 +66,10 @@ function toCommandInfo(command: SlashCommand): SlashCommandInfo {
     return { name: command.name, description: command.description, argumentHint: command.argumentHint };
 }
 
-function toWindow(window: { utilization: number | null; resets_at: string | null } | null | undefined): RateWindow | undefined {
-    return window ? { utilization: window.utilization, resetsAt: window.resets_at } : undefined;
-}
+/** Écart minimal entre deux lectures de la conso du compte (sauf demande explicite). */
+const ACCOUNT_MIN_INTERVAL_MS = 60_000;
+/** Lecture périodique, même sans onglet actif, pour que la jauge et les resets restent à jour. */
+const ACCOUNT_POLL_MS = 5 * 60_000;
 
 /**
  * Gère les sessions Claude vivantes : une par onglet ouvert. Les messages du SDK sont diffusés
@@ -73,6 +77,45 @@ function toWindow(window: { utilization: number | null; resets_at: string | null
  */
 export class SessionManager extends EventEmitter<ManagerEvents> {
     private readonly live = new Map<number, Live>();
+    private account: AccountUsage | undefined;
+    private accountRead: Promise<void> | undefined;
+    private accountTimer: NodeJS.Timeout | undefined;
+
+    /** Dernière conso du compte connue (envoyée à chaque client qui se connecte). */
+    get accountUsage(): AccountUsage | undefined {
+        return this.account;
+    }
+
+    /** Lit la conso du compte maintenant puis toutes les 5 min. */
+    startAccountPolling(): void {
+        void this.refreshAccount();
+        this.accountTimer ??= setInterval(() => void this.refreshAccount(), ACCOUNT_POLL_MS);
+        this.accountTimer.unref();
+    }
+
+    /**
+     * Relit la conso du compte (5 h, 7 j, par modèle, dates de reset), via une session ouverte ou à
+     * défaut une session sonde. Une lecture déjà en cours est partagée ; sans `force`, au plus une par minute.
+     */
+    refreshAccount(force = false): Promise<void> {
+        if (this.accountRead) return this.accountRead;
+        if (!force && this.account && !this.account.error && Date.now() - new Date(this.account.at).getTime() < ACCOUNT_MIN_INTERVAL_MS) return Promise.resolve();
+        this.accountRead = (async () => {
+            const live = [...this.live.values()][0];
+            let account: AccountUsage;
+            try {
+                account = live ? await readUsage(live.q).catch(() => probeUsage()) : await probeUsage();
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                account = { ...(this.account ?? { subscription: null, available: false, windows: [] }), at: new Date().toISOString(), error: message };
+            }
+            this.account = account;
+            this.emit('account', account);
+        })().finally(() => {
+            this.accountRead = undefined;
+        });
+        return this.accountRead;
+    }
 
     isLive(runId: number): boolean {
         return this.live.has(runId);
@@ -109,7 +152,8 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
         });
         this.live.set(runId, live);
         // Le CLI accepte un prompt dès maintenant ; le message `init` n'arrive qu'avec le premier tour.
-        this.patch(live, { state: 'idle', lastError: null });
+        // Rouvrir un onglet archivé le ramène dans la barre d'onglets.
+        this.patch(live, { state: 'idle', lastError: null, archived: false });
 
         // Commandes slash, modèles et compte sont connus dès le démarrage du CLI.
         void live.q
@@ -134,10 +178,15 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
         return live.run;
     }
 
-    async prompt(runId: number, text: string): Promise<void> {
+    async prompt(runId: number, text: string, images: ImageAttachment[] = []): Promise<void> {
         const live = this.live.get(runId) ?? (await this.open(runId).then(() => this.live.get(runId)));
         if (!live) throw new Error(`onglet ${runId} introuvable`);
-        const message = live.queue.push(text);
+        // `/mcp` : l'app affiche l'état des serveurs dans une fenêtre, rien n'entre dans la conversation.
+        if (text.trim() === '/mcp' && images.length === 0) {
+            await this.mcp(runId, 'status');
+            return;
+        }
+        const message = live.queue.push(text, images);
         // Le CLI ne renvoie pas nos propres prompts : on les garde pour l'affichage et le rejeu.
         const echo = { ...message, session_id: live.run.sessionId ?? '' } as SDKMessage;
         this.remember(live, echo);
@@ -149,6 +198,40 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
         const live = this.live.get(runId);
         if (!live) return;
         await live.q.interrupt();
+    }
+
+    /** État des serveurs MCP de la session, après une action éventuelle (reconnexion, activation). */
+    async mcp(runId: number, action: McpAction, server?: string): Promise<void> {
+        const live = this.live.get(runId);
+        if (!live) throw new Error(`onglet ${runId} sans session`);
+        try {
+            if (action === 'reconnect' && server) await live.q.reconnectMcpServer(server);
+            else if ((action === 'enable' || action === 'disable') && server) await live.q.toggleMcpServer(server, action === 'enable');
+        } catch (error) {
+            this.emit('error', runId, `MCP ${server ?? ''} : ${error instanceof Error ? error.message : String(error)}`);
+        }
+        const servers = await live.q.mcpServerStatus();
+        const status: McpStatus = {
+            runId,
+            at: new Date().toISOString(),
+            servers: servers.map((s): McpServerInfo => {
+                const config = (s.config ?? {}) as { type?: string; url?: string; command?: string; args?: string[] };
+                const transport = config.type ?? (config.url ? 'http' : config.command ? 'stdio' : undefined);
+                const target = config.url ?? (config.command ? [config.command, ...(config.args ?? [])].join(' ') : undefined);
+                return {
+                    name: s.name,
+                    status: s.status,
+                    ...(s.scope ? { scope: s.scope } : {}),
+                    ...(s.source ? { source: s.source } : {}),
+                    ...(s.serverInfo?.version ? { version: s.serverInfo.version } : {}),
+                    ...(transport ? { transport } : {}),
+                    ...(target ? { target } : {}),
+                    ...(s.error ? { error: s.error } : {}),
+                    tools: (s.tools ?? []).map((t) => ({ name: t.name, ...(t.description ? { description: t.description } : {}) })),
+                };
+            }),
+        };
+        this.emit('mcp', status);
     }
 
     /** Répond à une question de Claude ou à une demande de validation de plan. */
@@ -247,38 +330,14 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
         if (live.messages.length > BUFFER_LIMIT) live.messages.splice(0, live.messages.length - BUFFER_LIMIT);
     }
 
-    /** Contexte utilisé par la session et limites du compte, après chaque tour. */
+    /** Contexte utilisé par la session après chaque tour ; la conso du compte est relue à part. */
     private async refreshUsage(live: Live): Promise<void> {
         const usage: UsageInfo = { runId: live.run.id, at: new Date().toISOString() };
         try {
-            const context = await live.q.getContextUsage();
+            const context = await live.q.getContextUsage({ detail: 'summary' });
             usage.context = { tokens: context.totalTokens, max: context.maxTokens, percent: context.percentage };
         } catch {
             // session déjà fermée, ou CLI trop ancien
-        }
-        try {
-            const account = await live.q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
-            usage.subscription = account.subscription_type;
-            const limits = account.rate_limits;
-            if (limits) {
-                const windows: NonNullable<UsageInfo['limits']> = {};
-                const fiveHour = toWindow(limits.five_hour);
-                const sevenDay = toWindow(limits.seven_day);
-                const sevenDayOpus = toWindow(limits.seven_day_opus);
-                const sevenDaySonnet = toWindow(limits.seven_day_sonnet);
-                if (fiveHour) windows.fiveHour = fiveHour;
-                if (sevenDay) windows.sevenDay = sevenDay;
-                if (sevenDayOpus) windows.sevenDayOpus = sevenDayOpus;
-                if (sevenDaySonnet) windows.sevenDaySonnet = sevenDaySonnet;
-                if (limits.extra_usage) {
-                    windows.extra = { enabled: limits.extra_usage.is_enabled, used: limits.extra_usage.used_credits, limit: limits.extra_usage.monthly_limit, utilization: limits.extra_usage.utilization };
-                }
-                usage.limits = windows;
-            } else {
-                usage.limits = null;
-            }
-        } catch {
-            // idem
         }
         if (this.live.get(live.run.id) !== live) return;
         live.usage = usage;
@@ -298,6 +357,10 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
                 } else if (message.type === 'result') {
                     this.patch(live, { state: 'idle', costUsd: message.total_cost_usd });
                     void this.refreshUsage(live);
+                    void this.refreshAccount();
+                } else if (message.type === 'rate_limit_event') {
+                    // Une fenêtre a changé d'état (seuil franchi, limite atteinte) : on relit tout.
+                    void this.refreshAccount(true);
                 }
             }
             if (this.live.get(runId) === live) {

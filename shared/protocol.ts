@@ -41,15 +41,21 @@ export interface Run {
     permissionMode: PermissionMode | null;
     costUsd: number;
     issueNumber: number | null;
+    /** PR relue dans un onglet `pr`. */
+    prNumber: number | null;
     branch: string | null;
     baseBranch: string | null;
     worktree: string | null;
     prUrl: string | null;
     installStatus: InstallStatus | null;
     lastError: string | null;
+    /** Onglet fermé : plus affiché, mais gardé dans l'historique de son issue et reprenable. */
+    archived: boolean;
     createdAt: string;
     updatedAt: string;
 }
+
+export type OpenApp = 'vscode' | 'finder' | 'terminal' | 'iterm';
 
 export interface SessionHistoryItem {
     sessionId: string;
@@ -89,24 +95,31 @@ export interface ModelChoice {
     description: string;
 }
 
+/** Une fenêtre de limite du forfait : `utilization` en pourcentage (0-100), `resetsAt` en ISO 8601. */
 export interface RateWindow {
+    label: string;
     utilization: number | null;
     resetsAt: string | null;
 }
 
-/** Consommation : contexte de la session et limites du compte (fenêtres 5 h et 7 j). */
+/** Contexte utilisé par une session, après chaque tour. */
 export interface UsageInfo {
     runId: number;
     at: string;
     context?: { tokens: number; max: number; percent: number };
-    subscription?: string | null;
-    limits?: {
-        fiveHour?: RateWindow;
-        sevenDay?: RateWindow;
-        sevenDayOpus?: RateWindow;
-        sevenDaySonnet?: RateWindow;
-        extra?: { enabled: boolean; used: number | null; limit: number | null; utilization: number | null };
-    } | null;
+}
+
+/**
+ * Consommation du compte claude.ai (globale, pas liée à un onglet) : fenêtres 5 h, 7 j et par modèle.
+ * `available` est faux pour une clé d'API, Bedrock ou Vertex ; `error` dit pourquoi la lecture a échoué.
+ */
+export interface AccountUsage {
+    at: string;
+    subscription: string | null;
+    available: boolean;
+    windows: RateWindow[];
+    extra?: { used: number | null; limit: number | null; utilization: number | null; currency: string | null };
+    error?: string;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -122,6 +135,13 @@ export interface IssueRef {
     state: 'OPEN' | 'CLOSED';
 }
 
+/** Statut de l'issue dans un GitHub Project (champ « Status ») ; `order` = position de l'option dans le projet. */
+export interface IssueStatus {
+    project: string;
+    name: string;
+    order: number;
+}
+
 export interface Issue extends IssueRef {
     url: string;
     createdAt: string;
@@ -132,6 +152,7 @@ export interface Issue extends IssueRef {
     comments: number;
     parent: number | null;
     subIssues: IssueRef[];
+    status: IssueStatus | null;
 }
 
 export interface IssueComment {
@@ -143,7 +164,10 @@ export interface IssueComment {
 export interface IssueDetail extends Issue {
     body: string;
     commentList: IssueComment[];
+    /** Branches de la section « Development » (créées par `gh issue develop`). */
     linkedBranches: string[];
+    /** PR qui ferment l'issue (`Closes #n`) ; vide quand les PR ne font que la référencer. */
+    pullRequests: PullRequestRef[];
 }
 
 export interface PullRequestRef {
@@ -159,8 +183,139 @@ export interface PullRequestRef {
 export interface RepoIssues {
     repoId: number;
     issues: Issue[];
+    /** Curseur GitHub de la page suivante, `null` quand tout est chargé. */
+    nextCursor: string | null;
     error?: string;
     fetchedAt: string;
+}
+
+/** Worktree local d'une issue (branche liée sortie dans `.worktrees/`). */
+export interface IssueWorktree {
+    path: string;
+    branch: string | null;
+}
+
+/** Réponse du détail d'une issue : l'issue, ses onglets (archivés compris), les sessions Claude Code de sa branche, son worktree. */
+export interface IssueDetailResponse {
+    issue: IssueDetail;
+    runs: Run[];
+    sessions: SessionHistoryItem[];
+    worktree: IssueWorktree | null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pull requests et review
+// ---------------------------------------------------------------------------------------------
+
+/** `review` : review demandée à moi ; `mine` : mes PR ; `all` : toutes les ouvertes. */
+export type PullFilter = 'review' | 'mine' | 'all';
+
+/** État agrégé des checks du dernier commit (`statusCheckRollup`). */
+export type ChecksState = 'SUCCESS' | 'FAILURE' | 'ERROR' | 'PENDING' | 'EXPECTED' | null;
+
+export type ReviewDecision = 'APPROVED' | 'CHANGES_REQUESTED' | 'REVIEW_REQUIRED' | null;
+
+export interface PullSummary {
+    number: number;
+    title: string;
+    url: string;
+    state: 'OPEN' | 'CLOSED' | 'MERGED';
+    isDraft: boolean;
+    author: string;
+    createdAt: string;
+    updatedAt: string;
+    baseRefName: string;
+    headRefName: string;
+    additions: number;
+    deletions: number;
+    changedFiles: number;
+    reviewDecision: ReviewDecision;
+    checks: ChecksState;
+    labels: Array<{ name: string; color: string }>;
+}
+
+export interface CheckInfo {
+    name: string;
+    /** `SUCCESS`, `FAILURE`, `PENDING`, `SKIPPED`, `NEUTRAL`… (conclusion d'un check run ou état d'un statut). */
+    state: string;
+    url: string | null;
+}
+
+export interface ReviewThreadInfo {
+    path: string;
+    line: number | null;
+    isResolved: boolean;
+    isOutdated: boolean;
+    comments: IssueComment[];
+}
+
+export interface SubmittedReview {
+    author: string;
+    state: string;
+    submittedAt: string | null;
+    body: string;
+}
+
+export interface PullDetail extends PullSummary {
+    body: string;
+    headRefOid: string;
+    isCrossRepository: boolean;
+    files: Array<{ path: string; additions: number; deletions: number }>;
+    comments: IssueComment[];
+    reviews: SubmittedReview[];
+    threads: ReviewThreadInfo[];
+    checkList: CheckInfo[];
+    /** Issues liées : fermées par la PR (`Closes #n`), citées dans sa description (`Refs #n`), ou numéro de sa branche. */
+    issues: IssueRef[];
+}
+
+export interface RepoPulls {
+    repoId: number;
+    pulls: PullSummary[];
+    error?: string;
+    fetchedAt: string;
+}
+
+export interface PullDetailResponse {
+    pull: PullDetail;
+    /** Onglets ouverts sur cette PR (archivés compris). */
+    runs: Run[];
+    /** Worktree local où la branche de la PR est sortie, s'il y en a un. */
+    worktree: IssueWorktree | null;
+}
+
+export type DraftLabel = 'bloquant' | 'à corriger' | 'détail' | 'question';
+export type DraftSide = 'LEFT' | 'RIGHT';
+
+/** Un commentaire de review en brouillon, aux champs de l'API GitHub, plus un label de tri. */
+export interface ReviewDraft {
+    id: number;
+    path: string;
+    line: number;
+    startLine: number | null;
+    side: DraftSide;
+    body: string;
+    label: DraftLabel | null;
+    /** `claude` : écrit par la review ; `me` : ajouté ou modifié à la main. */
+    source: 'claude' | 'me';
+}
+
+/** `PENDING` : review en attente sur GitHub, à soumettre là-bas ; sinon soumise avec ce verdict. */
+export type ReviewEvent = 'PENDING' | 'COMMENT' | 'APPROVE' | 'REQUEST_CHANGES';
+
+export interface ReviewState {
+    repoId: number;
+    prNumber: number;
+    /** Commit relu (celui des brouillons) ; `null` tant que la review n'a rien écrit. */
+    commitId: string | null;
+    body: string;
+    event: ReviewEvent;
+    drafts: ReviewDraft[];
+    /** Fichier que la session de review écrit ; l'app l'importe dès qu'il change. */
+    file: string;
+    importedAt: string | null;
+    publishedAt: string | null;
+    publishedUrl: string | null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -178,6 +333,8 @@ export interface JobInfo {
     startedAt: string;
     endedAt: string | null;
     output: string;
+    /** Dossier où la commande tourne, relatif au worktree (absent : sa racine). */
+    dir?: string;
 }
 
 export interface WorktreeInfo {
@@ -195,20 +352,167 @@ export interface WorktreeInfo {
 // WebSocket
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// MCP (résultat de `/mcp` dans l'app)
+// ---------------------------------------------------------------------------------------------
+
+export type McpServerState = 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled';
+
+export interface McpServerInfo {
+    name: string;
+    status: McpServerState;
+    scope?: string;
+    source?: string;
+    version?: string;
+    /** `stdio`, `http`, `sse`… et l'URL ou la commande, pour situer le serveur. */
+    transport?: string;
+    target?: string;
+    error?: string;
+    tools: Array<{ name: string; description?: string }>;
+}
+
+export interface McpStatus {
+    runId: number;
+    at: string;
+    servers: McpServerInfo[];
+}
+
+export type McpAction = 'status' | 'reconnect' | 'enable' | 'disable';
+
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+
+/** Image jointe à un prompt (collée, glissée ou choisie), en base64. */
+export interface ImageAttachment {
+    mediaType: ImageMediaType;
+    data: string;
+    name?: string;
+}
+
 export type ClientMessage =
-    | { type: 'prompt'; runId: number; text: string }
+    | { type: 'prompt'; runId: number; text: string; images?: ImageAttachment[] }
     | { type: 'interrupt'; runId: number }
     | { type: 'answer'; runId: number; requestId: string; allow: boolean; updatedInput?: Record<string, unknown>; message?: string }
     | { type: 'replay'; runId: number }
     | { type: 'setPermissionMode'; runId: number; mode: PermissionMode }
-    | { type: 'setModel'; runId: number; model: string };
+    | { type: 'setModel'; runId: number; model: string }
+    | { type: 'mcp'; runId: number; action: McpAction; server?: string }
+    | { type: 'refreshAccount'; runId?: never };
+
+/** Skill ou commande disponible pour les sessions d'un dépôt (lu sur le disque). */
+export interface SkillInfo {
+    /** Nom à appeler (`core-pr-review`, `code-review:code-review`). */
+    name: string;
+    description: string;
+    source: 'project' | 'user' | 'plugin';
+}
+
+/** Étape d'une opération longue (ouverture d'une PR, implémentation), affichée sous le loader. */
+export interface ProgressStep {
+    label: string;
+    state: 'pending' | 'running' | 'done' | 'failed';
+    /** Commande ou précision ; le message d'erreur pour une étape en échec. */
+    detail?: string;
+    startedAt?: string;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Implémentation de plusieurs issues (lot)
+// ---------------------------------------------------------------------------------------------
+
+/** D'où vient une dépendance : relation GitHub « blocked by », texte de l'issue, parent/sous-issue, Claude, ou ajout à la main. */
+export type DependencySource = 'github' | 'text' | 'subissue' | 'claude' | 'manual';
+
+/** `issue` ne peut être faite qu'après `dependsOn`. */
+export interface IssueDependency {
+    issue: number;
+    dependsOn: number;
+    source: DependencySource;
+    reason?: string;
+}
+
+/** État d'une issue (ou PR) dont dépend le lot, vu au moment de l'analyse ou du lancement. */
+export interface DependencyStatus {
+    number: number;
+    title: string;
+    kind: 'issue' | 'pr';
+    state: 'OPEN' | 'CLOSED' | 'MERGED';
+    /** PR ouverte sur laquelle empiler (celle de l'issue, ou la PR elle-même). */
+    openPr: { number: number; branch: string } | null;
+    /** Prête : fermée/mergée, ou avec une PR ouverte. Sinon, ses dépendantes attendent. */
+    ready: boolean;
+}
+
+/** Résultat de l'analyse d'une sélection d'issues. */
+export interface BatchAnalysis {
+    issues: IssueRef[];
+    dependencies: IssueDependency[];
+    /** Issues ou PR hors sélection dont dépend une issue sélectionnée. */
+    external: DependencyStatus[];
+    /** Problème non bloquant (relations GitHub illisibles, analyse Claude en échec…). */
+    warnings: string[];
+}
+
+/** Une issue d'un lot qui attend ses dépendances (ou dont le lancement a échoué). */
+export interface BatchItem {
+    repoId: number;
+    issueNumber: number;
+    title: string;
+    dependsOn: number[];
+    planMode: boolean;
+    state: 'waiting' | 'failed';
+    /** Ce qu'elle attend, ou l'erreur. */
+    detail: string;
+    createdAt: string;
+}
+
+export interface BatchResult {
+    started: Run[];
+    waiting: BatchItem[];
+    failed: Array<{ issueNumber: number; error: string }>;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Nettoyage des worktrees et branches, environnement Bruno
+// ---------------------------------------------------------------------------------------------
+
+/** Un worktree (avec sa branche) ou une branche locale seule qui semble ne plus servir. */
+export interface CleanupItem {
+    /** `wt:<chemin>` ou `br:<branche>`. */
+    id: string;
+    worktree: string | null;
+    branch: string | null;
+    issue: { number: number; title: string; state: 'OPEN' | 'CLOSED' } | null;
+    pr: { number: number; state: 'OPEN' | 'CLOSED' | 'MERGED' } | null;
+    /** Pourquoi elle semble inutile (PR mergée, issue fermée…). */
+    reasons: string[];
+    /** Ce qui serait perdu ou fermé : modifications non commitées, commits jamais poussés, onglet ouvert. */
+    warnings: string[];
+    /** Sans risque de perte : cochée d'office. */
+    safe: boolean;
+}
+
+export interface CleanupList {
+    items: CleanupItem[];
+    /** Worktrees et branches gardés (PR ouverte, issue ouverte, branches de base…). */
+    kept: number;
+    base: string;
+}
+
+/** Commande Bruno du profil et dossier (dépôt ou worktree) sur lequel Bruno pointe. */
+export interface BrunoState {
+    command: string | null;
+    active: string | null;
+}
 
 export type ServerMessage =
-    | { type: 'hello'; runs: Run[]; repos: Repo[] }
+    | { type: 'hello'; runs: Run[]; repos: Repo[]; account?: AccountUsage }
+    | { type: 'batch'; items: BatchItem[] }
+    | { type: 'account'; account: AccountUsage }
     | { type: 'sdk'; runId: number; message: SDKMessage }
     | { type: 'run'; run: Run }
     | { type: 'runDeleted'; runId: number }
     | { type: 'replay'; runId: number; messages: SDKMessage[]; asks: AskRequest[]; commands: SlashCommandInfo[]; models: ModelChoice[]; usage?: UsageInfo; jobs: JobInfo[] }
+    | { type: 'mcp'; status: McpStatus }
     | { type: 'ask'; ask: AskRequest }
     | { type: 'askResolved'; runId: number; requestId: string }
     | { type: 'permission'; event: PermissionEvent }
@@ -216,4 +520,6 @@ export type ServerMessage =
     | { type: 'models'; runId: number; models: ModelChoice[] }
     | { type: 'usage'; usage: UsageInfo }
     | { type: 'job'; job: JobInfo }
+    | { type: 'review'; review: ReviewState }
+    | { type: 'progress'; opId: string; steps: ProgressStep[] }
     | { type: 'error'; runId?: number; message: string };

@@ -2,6 +2,8 @@ import type { ReactElement } from 'react';
 import { useState } from 'react';
 import { api } from '../api';
 import { useStore } from '../store';
+import { BrunoButton } from './BrunoButton';
+import { CleanupButton } from './CleanupDialog';
 
 export function ReposPage(): ReactElement {
     const repos = useStore((s) => s.repos);
@@ -105,6 +107,8 @@ export function ReposPage(): ReactElement {
                                 <button className="small" onClick={() => void chatIn(repo.path)}>
                                     chat
                                 </button>
+                                {repo.host === 'github.com' && <CleanupButton repo={repo} label="nettoyer…" />}
+                                <BrunoButton repoId={repo.id} path={repo.path} label="Bruno (principal)" />
                                 <button className="small danger" onClick={() => void remove(repo.id)} title="Retirer de la liste (rien n'est supprimé sur le disque)">
                                     retirer
                                 </button>

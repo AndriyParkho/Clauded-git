@@ -27,6 +27,14 @@ npm start
 
 Variables : `PORT` (4747), `CLAUDED_GIT_HOME` (`~/.clauded-git`, base SQLite), `LOG_LEVEL`.
 
+## Issues
+
+La page Issues classe les issues par statut du GitHub Project (champ « Status », dans l'ordre des
+colonnes du projet) ; il faut le scope `read:project` sur le token `gh` (`gh auth refresh -s
+read:project` sinon). Le détail d'une issue liste son historique : les onglets de l'app (fermer un
+onglet l'archive, « Reprendre » le rouvre) et les sessions Claude Code de sa branche, reconnues par
+le numéro d'issue dans le nom de branche (`feature/9307-…`) ou par le dossier `.worktrees/issue-<n>`.
+
 ## Profils de dépôt
 
 Au premier usage d'un dépôt, l'app écrit `~/.clauded-git/profiles/<owner>__<name>.json` avec des

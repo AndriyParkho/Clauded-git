@@ -1,5 +1,8 @@
 import { exec } from './exec.js';
-import type { Issue, IssueDetail, IssueFilter, IssueRef, IssueState, PullRequestRef, Repo } from '../shared/protocol.js';
+import type { Issue, IssueDetail, IssueFilter, IssueRef, IssueState, IssueStatus, PullRequestRef, Repo } from '../shared/protocol.js';
+
+/** Taille d'une page de la liste des issues (le champ `projectItems` alourdit chaque nœud). */
+export const ISSUES_PAGE_SIZE = 40;
 
 type IssueSummary = Issue;
 
@@ -8,7 +11,7 @@ export function repoSlug(repo: Repo): string {
     return `${repo.owner}/${repo.name}`;
 }
 
-async function gh<T>(args: string[], cwd?: string): Promise<T> {
+export async function gh<T>(args: string[], cwd?: string): Promise<T> {
     const result = await exec('gh', args, cwd ? { cwd } : {});
     if (result.code !== 0) throw new Error(`gh ${args.slice(0, 3).join(' ')}… a échoué : ${result.stderr.trim() || result.stdout.trim()}`);
     try {
@@ -18,7 +21,26 @@ async function gh<T>(args: string[], cwd?: string): Promise<T> {
     }
 }
 
-async function graphql<T>(query: string, variables: Record<string, string | number>): Promise<T> {
+/**
+ * Comme `graphql`, mais garde les données d'une réponse partielle (un alias sur un numéro qui
+ * n'existe pas vaut `null` au lieu de faire échouer toute la requête).
+ */
+export async function graphqlPartial<T>(query: string, variables: Record<string, string | number>): Promise<T> {
+    const args = ['api', 'graphql', '-f', `query=${query}`];
+    for (const [key, value] of Object.entries(variables)) args.push(typeof value === 'number' ? '-F' : '-f', `${key}=${value}`);
+    // `gh api` sort en erreur sur une réponse partielle : on relit sa sortie quand même.
+    const result = await exec('gh', args);
+    let payload: { data?: T; errors?: Array<{ message: string }> };
+    try {
+        payload = JSON.parse(result.stdout) as typeof payload;
+    } catch {
+        throw new Error(`gh api graphql a échoué : ${result.stderr.trim() || result.stdout.trim()}`);
+    }
+    if (!payload.data) throw new Error(`GitHub : ${payload.errors?.map((e) => e.message).join(' ; ') ?? 'réponse vide'}`);
+    return payload.data;
+}
+
+export async function graphql<T>(query: string, variables: Record<string, string | number>): Promise<T> {
     const args = ['api', 'graphql', '-f', `query=${query}`];
     for (const [key, value] of Object.entries(variables)) args.push(typeof value === 'number' ? '-F' : '-f', `${key}=${value}`);
     const payload = await gh<{ data?: T; errors?: Array<{ message: string }> }>(args);
@@ -27,7 +49,8 @@ async function graphql<T>(query: string, variables: Record<string, string | numb
     return payload.data;
 }
 
-// Champs GraphQL d'une issue, sous-issues et parent compris (relations natives GitHub).
+// Champs GraphQL d'une issue, sous-issues et parent compris (relations natives GitHub), et le
+// champ « Status » des GitHub Projects où elle est rangée (scope `read:project` du token `gh`).
 const ISSUE_FIELDS = `
     number title state url createdAt updatedAt
     author { login }
@@ -36,7 +59,20 @@ const ISSUE_FIELDS = `
     comments { totalCount }
     parent { number }
     subIssues(first: 50) { nodes { number title state } }
+    projectItems(first: 5) {
+        nodes {
+            project { title }
+            fieldValueByName(name: "Status") {
+                ... on ProjectV2ItemFieldSingleSelectValue { name field { ... on ProjectV2SingleSelectField { options { name } } } }
+            }
+        }
+    }
 `;
+
+interface ProjectItemNode {
+    project: { title: string } | null;
+    fieldValueByName: { name: string; field: { options: Array<{ name: string }> } } | null;
+}
 
 interface IssueNode {
     number: number;
@@ -51,8 +87,21 @@ interface IssueNode {
     labels: { nodes: Array<{ name: string; color: string }> };
     comments: { totalCount: number };
     commentList?: { nodes: Array<{ author: { login: string } | null; createdAt: string; body: string }> };
+    closedByPullRequestsReferences?: { nodes: PullRequestRef[] };
     parent: { number: number } | null;
     subIssues: { nodes: IssueRef[] };
+    projectItems?: { nodes: ProjectItemNode[] };
+}
+
+/** Le premier projet où l'issue a un statut (une issue est rarement dans plusieurs projets). */
+function projectStatus(node: IssueNode): IssueStatus | null {
+    for (const item of node.projectItems?.nodes ?? []) {
+        const value = item.fieldValueByName;
+        if (!value?.name) continue;
+        const order = value.field?.options.findIndex((o) => o.name === value.name) ?? -1;
+        return { project: item.project?.title ?? '', name: value.name, order: order < 0 ? 999 : order };
+    }
+    return null;
 }
 
 function toSummary(node: IssueNode): IssueSummary {
@@ -69,11 +118,17 @@ function toSummary(node: IssueNode): IssueSummary {
         comments: node.comments.totalCount,
         parent: node.parent?.number ?? null,
         subIssues: node.subIssues.nodes,
+        status: projectStatus(node),
     };
 }
 
-/** Issues d'un dépôt, via la recherche GitHub (`@me` = le compte connecté à `gh`). */
-export async function listIssues(repo: Repo, filter: IssueFilter, state: IssueState): Promise<IssueSummary[]> {
+export interface IssuesPage {
+    issues: IssueSummary[];
+    nextCursor: string | null;
+}
+
+/** Une page d'issues d'un dépôt, via la recherche GitHub (`@me` = le compte connecté à `gh`). */
+export async function listIssues(repo: Repo, filter: IssueFilter, state: IssueState, after: string | null = null): Promise<IssuesPage> {
     const q = [
         `repo:${repoSlug(repo)}`,
         'is:issue',
@@ -83,18 +138,33 @@ export async function listIssues(repo: Repo, filter: IssueFilter, state: IssueSt
     ]
         .filter(Boolean)
         .join(' ');
-    const data = await graphql<{ search: { nodes: Array<IssueNode | Record<string, never>> } }>(
-        `query($q: String!) { search(query: $q, type: ISSUE, first: 100) { nodes { ... on Issue { ${ISSUE_FIELDS} } } } }`,
-        { q },
+    const variables: Record<string, string | number> = { q, first: ISSUES_PAGE_SIZE };
+    if (after) variables.after = after;
+    const data = await graphql<{ search: { nodes: Array<IssueNode | Record<string, never>>; pageInfo: { hasNextPage: boolean; endCursor: string | null } } }>(
+        `query($q: String!, $first: Int!, $after: String) {
+            search(query: $q, type: ISSUE, first: $first, after: $after) {
+                pageInfo { hasNextPage endCursor }
+                nodes { ... on Issue { ${ISSUE_FIELDS} } }
+            }
+        }`,
+        variables,
     );
-    return data.search.nodes.filter((node): node is IssueNode => 'number' in node).map(toSummary);
+    return {
+        issues: data.search.nodes.filter((node): node is IssueNode => 'number' in node).map(toSummary),
+        nextCursor: data.search.pageInfo.hasNextPage ? data.search.pageInfo.endCursor : null,
+    };
 }
 
 export async function getIssue(repo: Repo, number: number): Promise<IssueDetail> {
     const data = await graphql<{ repository: { issue: IssueNode } }>(
         `query($owner: String!, $name: String!, $number: Int!) {
             repository(owner: $owner, name: $name) {
-                issue(number: $number) { ${ISSUE_FIELDS} body commentList: comments(first: 100) { nodes { author { login } createdAt body } } }
+                issue(number: $number) {
+                    ${ISSUE_FIELDS}
+                    body
+                    commentList: comments(first: 100) { nodes { author { login } createdAt body } }
+                    closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { nodes { number url title state isDraft baseRefName headRefName } }
+                }
             }
         }`,
         { owner: repo.owner ?? '', name: repo.name ?? '', number },
@@ -105,6 +175,7 @@ export async function getIssue(repo: Repo, number: number): Promise<IssueDetail>
         body: node.body ?? '',
         commentList: (node.commentList?.nodes ?? []).map((c) => ({ author: c.author?.login ?? 'ghost', createdAt: c.createdAt, body: c.body })),
         linkedBranches: await linkedBranches(repo, number),
+        pullRequests: node.closedByPullRequestsReferences?.nodes ?? [],
     };
 }
 

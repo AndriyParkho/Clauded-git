@@ -12,9 +12,36 @@
   d'état local, Chat avec l'issue en brouillon, Implémenter (branche liée `gh issue develop`,
   worktree, install en fond, prompt), onglet avec Ouvrir, Issue, Diff, commandes du profil,
   Merge base, Merge → develop (avec résolution de conflits dans un chat), PR (statut, lien).
-- ⏳ À tester en vrai : `Implémenter` de bout en bout, les merges, les profils.
-- Suite : phase 2 (PR : liste, review avec brouillons), phase 3 (sous-issues en parallèle), phase 4
-  (page Spec).
+- ✅ Retour phase 1 : pagination (40 par page, « Charger la suite »), classement par statut du
+  GitHub Project (champ Status, ordre des colonnes, scope `read:project`), croix pour fermer le
+  détail, « Ouvrir le worktree » depuis l'issue, historique des chats par issue (onglets fermés
+  = archivés et reprenables, plus les sessions Claude Code dont la branche porte le numéro de
+  l'issue ou dont le dossier est son worktree).
+- ✅ Consommation du compte lue en continu (démarrage, toutes les 5 min, après chaque tour, bouton ↻),
+  avec la date de reset de chaque fenêtre (5 h, 7 j, par modèle).
+- ✅ Phase 2, PR : page « PR » (à relire, les miennes, toutes les ouvertes ; checks, verdict, +/−),
+  détail (description, checks, reviews, fils de commentaires), onglet PR (worktree `pr-<n>` ou celui
+  où la branche est déjà sortie, chat dedans), « Lancer la review » avec le skill du profil (choisi
+  dans l'onglet, enregistré dans le profil), brouillons importés dès que la session écrit
+  `~/.clauded-git/reviews/<owner>__<repo>__<n>.json`, affichés sous leur ligne du diff, modifiables,
+  ajout au clic sur un numéro de ligne, publication par l'app (review *pending* ou verdict), les
+  brouillons hors diff partant dans le corps. Dans l'onglet d'implémentation, le panneau PR montre
+  checks et commentaires, avec « Envoyer les commentaires au chat ».
+- ✅ Phase 3, plusieurs issues en parallèle : cases à cocher dans la liste (ou « Implémenter les
+  sous-issues » d'une parente), dépendances lues sur GitHub (« bloquée par », sous-issues,
+  `#n` dans le texte), complétées par Claude à la demande et modifiables, ordre de lancement par
+  vagues, détection des cycles. Les issues prêtes démarrent tout de suite, chacune dans son worktree
+  et son onglet ; les dépendantes attendent que la PR de leur dépendance soit ouverte, puis partent
+  sur sa branche (`gh issue develop --base`) avec une PR empilée (`gh pr create --base`). Le suivi
+  des attentes survit au redémarrage. Pas encore : limite de concurrence et vue en graphe.
+- ✅ Bouton « Nettoyer » : worktrees et branches locales inutiles (PR mergée ou fermée, issue fermée,
+  déjà mergés dans la base, branche distante supprimée), ceux qui feraient perdre du travail non
+  cochés d'office ; la suppression tourne en tâche de fond, sortie consultable.
+- ✅ Bouton « Bruno » : bascule l'environnement Bruno sur un worktree avec `bru-use` (champ `bruno`
+  du profil, deviné quand le dépôt a un dossier `bruno/`).
+- ⏳ À tester en vrai : `Implémenter` de bout en bout, les merges, les profils, la publication d'une
+  review, le worktree d'une PR venue d'un fork, un lot avec PR empilées, le nettoyage et Bruno.
+- Suite : phase 4 (page Spec).
 
 ## 1. Le problème
 
@@ -78,7 +105,8 @@ navigateur (React) ⇄ HTTP + WebSocket ⇄ serveur Node local (localhost)
   session est lancée avec le prompt système Claude Code et **toutes les sources de réglages** (user,
   project, local) : c'est ce qui charge CLAUDE.md, `.claude/skills`, les commandes, les hooks et les
   plugins du repo de travail et de ton compte.
-- Un bouton **Terminal** (`claude --resume <id>` dans le bon dossier) couvre ce que l'UI ne gère pas.
+- Un bouton **⧉ claude --resume** (barre d'état du chat) copie `cd <dossier> && claude --resume <id>`
+  pour continuer la session dans un terminal, ce qui couvre ce que l'UI ne gère pas (fermer l'onglet avant).
 - Stack : Node 22, TypeScript, Fastify + WebSocket, React + Vite, rendu markdown + mermaid, SQLite.
 - Lancement : la commande `clauded` démarre le serveur et ouvre le navigateur.
 

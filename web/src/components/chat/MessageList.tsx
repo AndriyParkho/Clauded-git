@@ -4,19 +4,55 @@ import { Markdown } from '../Markdown';
 import { buildItems, type Item } from './items';
 import { ToolCard } from './ToolCard';
 import type { RunView } from '../../store';
+import type { ImageAttachment } from '../../../../shared/protocol';
 
 const USER_PREVIEW_CHARS = 280;
 const USER_PREVIEW_LINES = 4;
 
 /** Message utilisateur replié après envoi, comme dans Claude Code : un clic pour tout voir. */
-function UserBubble({ text }: { text: string }): ReactElement {
+/** Vignettes des images d'un message ; clic pour l'afficher en grand. */
+export function ImageStrip({ images }: { images: ImageAttachment[] }): ReactElement {
+    const [zoom, setZoom] = useState<number | null>(null);
+    const src = (image: ImageAttachment): string => `data:${image.mediaType};base64,${image.data}`;
+    return (
+        <>
+            <div className="user-images">
+                {images.map((image, i) => (
+                    <img
+                        key={i}
+                        src={src(image)}
+                        alt={image.name ?? `image ${i + 1}`}
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            setZoom(i);
+                        }}
+                    />
+                ))}
+            </div>
+            {zoom !== null && images[zoom] && (
+                <div
+                    className="lightbox"
+                    onClick={(e) => {
+                        e.stopPropagation();
+                        setZoom(null);
+                    }}
+                >
+                    <img src={src(images[zoom])} alt="" />
+                </div>
+            )}
+        </>
+    );
+}
+
+function UserBubble({ text, images }: { text: string; images?: ImageAttachment[] }): ReactElement {
     const [open, setOpen] = useState(false);
     const lines = text.split('\n');
     const long = text.length > USER_PREVIEW_CHARS || lines.length > USER_PREVIEW_LINES;
     const preview = long ? `${lines.slice(0, USER_PREVIEW_LINES).join('\n').slice(0, USER_PREVIEW_CHARS)}…` : text;
     return (
         <div className={`msg user ${long ? 'collapsible' : ''}`} onClick={() => long && setOpen(!open)} title={long ? (open ? 'Replier' : 'Déplier') : undefined}>
-            <pre className="user-text">{open ? text : preview}</pre>
+            {images && images.length > 0 && <ImageStrip images={images} />}
+            {text && <pre className="user-text">{open ? text : preview}</pre>}
             {long && <span className="user-toggle">{open ? 'replier' : 'voir tout'}</span>}
         </div>
     );
@@ -25,7 +61,7 @@ function UserBubble({ text }: { text: string }): ReactElement {
 export function ItemView({ item }: { item: Item }): ReactElement | null {
     switch (item.kind) {
         case 'user':
-            return <UserBubble text={item.text} />;
+            return <UserBubble text={item.text} {...(item.images ? { images: item.images } : {})} />;
         case 'system-note':
             return (
                 <details className="system-note">

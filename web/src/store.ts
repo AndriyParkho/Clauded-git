@@ -1,6 +1,27 @@
 import { create } from 'zustand';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AskRequest, IssueFilter, IssueState, JobInfo, ModelChoice, PermissionEvent, Repo, RepoIssues, Run, ServerMessage, SlashCommandInfo, UsageInfo } from '../../shared/protocol';
+import type {
+    AccountUsage,
+    AskRequest,
+    BatchItem,
+    BrunoState,
+    IssueFilter,
+    IssueState,
+    JobInfo,
+    McpStatus,
+    ModelChoice,
+    PermissionEvent,
+    ProgressStep,
+    PullFilter,
+    Repo,
+    RepoIssues,
+    RepoPulls,
+    ReviewState,
+    Run,
+    ServerMessage,
+    SlashCommandInfo,
+    UsageInfo,
+} from '../../shared/protocol';
 
 /** Ce que l'UI garde pour un onglet, en plus de la ligne `Run` venue du serveur. */
 export interface RunView {
@@ -17,6 +38,8 @@ export interface RunView {
     permissions: PermissionEvent[];
     jobs: JobInfo[];
     usage?: UsageInfo;
+    /** Dernier résultat de `/mcp`, affiché dans une fenêtre au-dessus du chat (jamais dans le fil). */
+    mcp?: McpStatus;
     loaded: boolean;
 }
 
@@ -27,8 +50,19 @@ export interface Notice {
     runId?: number;
 }
 
-export type Page = 'chat' | 'issues' | 'repos';
-export type Panel = 'issue' | 'diff' | 'jobs' | 'pr';
+export type Page = 'chat' | 'issues' | 'pulls' | 'repos';
+export type Panel = 'issue' | 'diff' | 'jobs' | 'pr' | 'review' | 'info';
+
+export interface PullsState {
+    filter: PullFilter;
+    repoId: number | null;
+    byRepo: RepoPulls[];
+    loading: boolean;
+    selected: { repoId: number; number: number } | null;
+}
+
+/** Clé d'une review dans le store. */
+export const reviewKey = (repoId: number, prNumber: number): string => `${repoId}:${prNumber}`;
 
 export interface IssuesState {
     filter: IssueFilter;
@@ -37,6 +71,8 @@ export interface IssuesState {
     byRepo: RepoIssues[];
     loading: boolean;
     selected: { repoId: number; number: number } | null;
+    /** Issues cochées pour une implémentation en lot (toutes du même dépôt). */
+    checked: { repoId: number; numbers: number[] } | null;
 }
 
 interface State {
@@ -47,15 +83,30 @@ interface State {
     activeRunId: number | null;
     page: Page;
     notices: Notice[];
-    /** Dernières limites du compte vues, quelle que soit la session (elles sont globales). */
-    limits?: UsageInfo;
+    /** Conso du compte claude.ai (globale, relue par le serveur toutes les 5 min et après chaque tour). */
+    account?: AccountUsage;
     /** Texte à pré-remplir dans la saisie d'un onglet (chat d'issue). */
     drafts: Record<number, string>;
     /** Panneau latéral ouvert par onglet. */
     panels: Record<number, Panel | null>;
     issues: IssuesState;
+    pulls: PullsState;
+    /** Reviews en préparation, par `reviewKey`. */
+    reviews: Record<string, ReviewState>;
+    /** Derniers états des jobs suivis hors d'un onglet (merge dans develop depuis une issue ou une PR), par id. */
+    jobs: Record<string, JobInfo>;
+    /** Opération longue en cours (ouverture d'une PR, implémentation) : loader bloquant et ses étapes. */
+    progress: { opId: string; title: string; steps: ProgressStep[]; error?: string } | null;
+    /** Issues de lots en attente de leurs dépendances (ou en échec). */
+    batch: BatchItem[];
+    /** Commande Bruno et checkout actif, par dépôt (chargé à la demande). */
+    bruno: Record<number, BrunoState>;
+    /** Dernier job de nettoyage lancé, par dépôt. */
+    cleanupJobs: Record<number, string>;
 
     apply(message: ServerMessage): void;
+    setPulls(patch: Partial<PullsState>): void;
+    setReview(review: ReviewState): void;
     setConnected(connected: boolean): void;
     setRepos(repos: Repo[]): void;
     setRuns(runs: Run[]): void;
@@ -69,6 +120,7 @@ interface State {
     setDraft(runId: number, text: string | undefined): void;
     setPanel(runId: number, panel: Panel | null): void;
     setIssues(patch: Partial<IssuesState>): void;
+    dismissMcp(runId: number): void;
 }
 
 const emptyView = (): RunView => ({ messages: [], seen: new Set(), partial: '', partialTool: null, asks: [], commands: [], models: [], permissions: [], jobs: [], loaded: false });
@@ -90,7 +142,16 @@ export const useStore = create<State>((set, get) => ({
     notices: [],
     drafts: {},
     panels: {},
-    issues: { filter: 'assigned', state: 'open', repoId: null, byRepo: [], loading: false, selected: null },
+    issues: { filter: 'assigned', state: 'open', repoId: null, byRepo: [], loading: false, selected: null, checked: null },
+    pulls: { filter: 'review', repoId: null, byRepo: [], loading: false, selected: null },
+    reviews: {},
+    jobs: {},
+    progress: null,
+    batch: [],
+    bruno: {},
+    cleanupJobs: {},
+    setPulls: (patch) => set((state) => ({ pulls: { ...state.pulls, ...patch } })),
+    setReview: (review) => set((state) => ({ reviews: { ...state.reviews, [reviewKey(review.repoId, review.prNumber)]: review } })),
 
     setConnected: (connected) => set({ connected }),
     setRepos: (repos) => set({ repos }),
@@ -129,6 +190,13 @@ export const useStore = create<State>((set, get) => ({
         }),
     setPanel: (runId, panel) => set((state) => ({ panels: { ...state.panels, [runId]: panel } })),
     setIssues: (patch) => set((state) => ({ issues: { ...state.issues, ...patch } })),
+    dismissMcp: (runId) =>
+        set((state) => {
+            const view = state.views[runId];
+            if (!view) return {};
+            const { mcp: _dropped, ...rest } = view;
+            return { views: { ...state.views, [runId]: rest } };
+        }),
 
     apply: (message) => {
         const state = get();
@@ -140,10 +208,17 @@ export const useStore = create<State>((set, get) => ({
 
         switch (message.type) {
             case 'hello':
-                set({ repos: message.repos, runs: message.runs, activeRunId: state.activeRunId ?? message.runs.at(-1)?.id ?? null });
+                set({ repos: message.repos, runs: message.runs, activeRunId: state.activeRunId ?? message.runs.at(-1)?.id ?? null, ...(message.account ? { account: message.account } : {}) });
+                break;
+            case 'batch':
+                set({ batch: message.items });
+                break;
+            case 'account':
+                set({ account: message.account });
                 break;
             case 'run':
-                state.upsertRun(message.run);
+                if (message.run.archived) state.removeRun(message.run.id);
+                else state.upsertRun(message.run);
                 break;
             case 'runDeleted':
                 state.removeRun(message.runId);
@@ -158,8 +233,11 @@ export const useStore = create<State>((set, get) => ({
                     for (const m of message.messages) view = withMessage(view, m);
                     if (previous) view = { ...view, permissions: previous.permissions };
                     if (message.usage) view = { ...view, usage: message.usage };
-                    return { views: { ...s.views, [message.runId]: view }, ...(message.usage?.limits ? { limits: message.usage } : {}) };
+                    return { views: { ...s.views, [message.runId]: view } };
                 });
+                break;
+            case 'mcp':
+                patchView(message.status.runId, () => ({ mcp: message.status }));
                 break;
             case 'ask':
                 patchView(message.ask.runId, (view) => (view.asks.some((a) => a.id === message.ask.id) ? {} : { asks: [...view.asks, message.ask] }));
@@ -178,10 +256,23 @@ export const useStore = create<State>((set, get) => ({
                 break;
             case 'usage':
                 patchView(message.usage.runId, () => ({ usage: message.usage }));
-                if (message.usage.limits) set({ limits: message.usage });
                 break;
-            case 'job':
-                patchView(message.job.runId, (view) => ({ jobs: upsertJob(view.jobs, message.job) }));
+            case 'job': {
+                // Un nettoyage (tâche de fond) qui se termine le signale, où que l'on soit dans l'app.
+                const previous = state.jobs[message.job.id];
+                if (previous?.status === 'running' && message.job.status !== 'running' && Object.values(state.cleanupJobs).includes(message.job.id)) {
+                    state.notify(`${message.job.name} : ${message.job.output.trim().split('\n').at(-1) ?? ''}`);
+                }
+                // Tous les jobs sont suivis par id ; ceux d'un onglet (runId > 0) vont aussi dans sa vue.
+                set((s) => ({ jobs: { ...s.jobs, [message.job.id]: message.job } }));
+                if (message.job.runId > 0) patchView(message.job.runId, (view) => ({ jobs: upsertJob(view.jobs, message.job) }));
+                break;
+            }
+            case 'progress':
+                set((s) => (s.progress?.opId === message.opId ? { progress: { ...s.progress, steps: message.steps } } : {}));
+                break;
+            case 'review':
+                state.setReview(message.review);
                 break;
             case 'error':
                 state.notify(message.message, message.runId);

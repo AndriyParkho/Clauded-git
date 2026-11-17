@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react';
+import { useState } from 'react';
 import { stateDot } from '../Tabs';
 import { send } from '../../ws';
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
@@ -16,6 +17,29 @@ const MODES: Array<{ value: PermissionMode; label: string }> = [
     { value: 'plan', label: 'plan mode' },
     { value: 'bypassPermissions', label: 'bypass' },
 ];
+
+/**
+ * Copie la commande qui reprend cette session dans un terminal (`claude --resume`), pour continuer
+ * la conversation hors de l'app. À lancer une fois l'onglet fermé : deux processus sur la même session
+ * écriraient dans le même transcript.
+ */
+function CopyResume({ command }: { command: string }): ReactElement {
+    const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+    const copy = async (): Promise<void> => {
+        try {
+            await navigator.clipboard.writeText(command);
+            setState('copied');
+        } catch {
+            setState('failed');
+        }
+        setTimeout(() => setState('idle'), 2000);
+    };
+    return (
+        <button className="small" onClick={() => void copy()} title={`Reprendre cette session dans un terminal (fermer l'onglet avant).\nCopie : ${command}`}>
+            {state === 'copied' ? 'commande copiée ✓' : state === 'failed' ? 'copie impossible' : '⧉ claude --resume'}
+        </button>
+    );
+}
 
 interface Props {
     run: Run;
@@ -63,11 +87,10 @@ export function StatusBar({ run, models, permissions, usage }: Props): ReactElem
             <span className="muted" title="Coût de la session">
                 {run.costUsd.toFixed(2)} $
             </span>
-            {resumeCommand && (
-                <button className="small" onClick={() => void navigator.clipboard?.writeText(resumeCommand)} title={`Copier : ${resumeCommand}`}>
-                    Terminal
-                </button>
-            )}
+            <button className="small" disabled={run.state === 'closed'} onClick={() => send({ type: 'mcp', runId: run.id, action: 'status' })} title="État des serveurs MCP de la session (comme /mcp)">
+                MCP
+            </button>
+            {resumeCommand && <CopyResume command={resumeCommand} />}
             {run.lastError && (
                 <span className="error" title={run.lastError}>
                     erreur

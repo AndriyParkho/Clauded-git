@@ -1,7 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
-import { getRun, listRepos, listRuns } from './db.js';
+import { batchEvents } from './batch.js';
+import { getRun, listBatchItems, listRepos, listRuns } from './db.js';
 import { jobs } from './jobs.js';
+import { progressEvents } from './progress.js';
+import { reviewWatcher } from './review.js';
 import { sessions } from './sessions/manager.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 
@@ -24,7 +27,12 @@ export function wireSessionEvents(): void {
     sessions.on('commands', (runId, commands) => broadcast({ type: 'commands', runId, commands }));
     sessions.on('models', (runId, models) => broadcast({ type: 'models', runId, models }));
     sessions.on('usage', (usage) => broadcast({ type: 'usage', usage }));
+    sessions.on('account', (account) => broadcast({ type: 'account', account }));
+    sessions.on('mcp', (status) => broadcast({ type: 'mcp', status }));
     jobs.on('job', (job) => broadcast({ type: 'job', job }));
+    reviewWatcher.on('review', (review) => broadcast({ type: 'review', review }));
+    progressEvents.on('progress', (opId, steps) => broadcast({ type: 'progress', opId, steps }));
+    batchEvents.on('batch', (items) => broadcast({ type: 'batch', items }));
     sessions.on('error', (runId, message) => broadcast(runId === undefined ? { type: 'error', message } : { type: 'error', runId, message }));
 }
 
@@ -34,7 +42,11 @@ export async function registerWebSocket(app: FastifyInstance): Promise<void> {
         const send = (message: ServerMessage): void => {
             if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
         };
-        send({ type: 'hello', runs: listRuns(), repos: listRepos() });
+        const account = sessions.accountUsage;
+        send({ type: 'hello', runs: listRuns(), repos: listRepos(), ...(account ? { account } : {}) });
+        send({ type: 'batch', items: listBatchItems() });
+        // Une page qui s'ouvre veut des chiffres frais (sans relire plus d'une fois par minute).
+        void sessions.refreshAccount();
 
         socket.on('message', (raw) => {
             let message: ClientMessage;
@@ -43,7 +55,7 @@ export async function registerWebSocket(app: FastifyInstance): Promise<void> {
             } catch {
                 return;
             }
-            void handle(message, send).catch((error: unknown) => send({ type: 'error', runId: message.runId, message: String(error) }));
+            void handle(message, send).catch((error: unknown) => send(message.runId === undefined ? { type: 'error', message: String(error) } : { type: 'error', runId: message.runId, message: String(error) }));
         });
         socket.on('close', () => clients.delete(socket));
     });
@@ -52,7 +64,7 @@ export async function registerWebSocket(app: FastifyInstance): Promise<void> {
 async function handle(message: ClientMessage, send: (message: ServerMessage) => void): Promise<void> {
     switch (message.type) {
         case 'prompt':
-            await sessions.prompt(message.runId, message.text);
+            await sessions.prompt(message.runId, message.text, message.images ?? []);
             break;
         case 'interrupt':
             await sessions.interrupt(message.runId);
@@ -70,6 +82,12 @@ async function handle(message: ClientMessage, send: (message: ServerMessage) => 
             break;
         case 'setModel':
             await sessions.setModel(message.runId, message.model);
+            break;
+        case 'mcp':
+            await sessions.mcp(message.runId, message.action, message.server);
+            break;
+        case 'refreshAccount':
+            await sessions.refreshAccount(true);
             break;
     }
 }

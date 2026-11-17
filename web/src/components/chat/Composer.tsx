@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { SlashCommandInfo } from '../../../../shared/protocol';
+import { imageFiles, toAttachment } from '../../images';
+import { useStore } from '../../store';
+import type { ImageAttachment, SlashCommandInfo } from '../../../../shared/protocol';
 
 interface Props {
     commands: SlashCommandInfo[];
@@ -8,14 +10,18 @@ interface Props {
     /** Texte à placer dans la saisie (une fois), par exemple le contexte d'une issue. */
     draft?: string | undefined;
     onDraftConsumed?: () => void;
-    onSend: (text: string) => void;
+    onSend: (text: string, images: ImageAttachment[]) => void;
     onStop: () => void;
 }
 
 export function Composer({ commands, running, draft, onDraftConsumed, onSend, onStop }: Props): ReactElement {
     const [text, setText] = useState('');
+    const [images, setImages] = useState<ImageAttachment[]>([]);
+    const [dragging, setDragging] = useState(false);
     const [cursor, setCursor] = useState(0);
     const area = useRef<HTMLTextAreaElement>(null);
+    const picker = useRef<HTMLInputElement>(null);
+    const notify = useStore((s) => s.notify);
 
     useEffect(() => {
         if (draft === undefined) return;
@@ -43,6 +49,32 @@ export function Composer({ commands, running, draft, onDraftConsumed, onSend, on
         el.style.height = `${Math.min(el.scrollHeight, 320)}px`;
     }, [text]);
 
+    /** Ajoute des fichiers image (collés, glissés ou choisis) aux pièces jointes du prochain message. */
+    const attach = async (files: File[]): Promise<void> => {
+        for (const file of files) {
+            try {
+                const attachment = await toAttachment(file);
+                setImages((current) => [...current, attachment]);
+            } catch (error) {
+                notify(`Image ignorée : ${String(error instanceof Error ? error.message : error)}`);
+            }
+        }
+        area.current?.focus();
+    };
+
+    const onPaste = (event: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+        const files = imageFiles(event.clipboardData);
+        if (files.length === 0) return;
+        event.preventDefault();
+        void attach(files);
+    };
+
+    const onDrop = (event: React.DragEvent<HTMLDivElement>): void => {
+        event.preventDefault();
+        setDragging(false);
+        void attach(imageFiles(event.dataTransfer));
+    };
+
     const accept = (command: SlashCommandInfo): void => {
         setText(`/${command.name} `);
         area.current?.focus();
@@ -50,9 +82,10 @@ export function Composer({ commands, running, draft, onDraftConsumed, onSend, on
 
     const submit = (): void => {
         const value = text.trim();
-        if (!value) return;
-        onSend(value);
+        if (!value && images.length === 0) return;
+        onSend(value, images);
         setText('');
+        setImages([]);
     };
 
     const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -80,8 +113,18 @@ export function Composer({ commands, running, draft, onDraftConsumed, onSend, on
         }
     };
 
+    const canSend = Boolean(text.trim()) || images.length > 0;
+
     return (
-        <div className="composer">
+        <div
+            className={`composer ${dragging ? 'dragging' : ''}`}
+            onDragOver={(e) => {
+                e.preventDefault();
+                setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={onDrop}
+        >
             {suggestions.length > 0 && (
                 <div className="suggestions">
                     {suggestions.map((command, i) => (
@@ -95,14 +138,48 @@ export function Composer({ commands, running, draft, onDraftConsumed, onSend, on
                     ))}
                 </div>
             )}
+            {images.length > 0 && (
+                <div className="attachments">
+                    {images.map((image, i) => (
+                        <span key={i} className="attachment" title={image.name ?? `image ${i + 1}`}>
+                            <img src={`data:${image.mediaType};base64,${image.data}`} alt="" />
+                            <button className="attachment-remove" onClick={() => setImages(images.filter((_, j) => j !== i))} title="Retirer">
+                                ×
+                            </button>
+                        </span>
+                    ))}
+                </div>
+            )}
             <div className="composer-row">
-                <textarea ref={area} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} placeholder="Message pour Claude… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne, / pour les commandes)" rows={2} />
+                <button className="attach" onClick={() => picker.current?.click()} title="Joindre une image (ou colle-la / glisse-la dans la saisie)">
+                    📎
+                </button>
+                <input
+                    ref={picker}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                        void attach(Array.from(e.target.files ?? []));
+                        e.target.value = '';
+                    }}
+                />
+                <textarea
+                    ref={area}
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                    onKeyDown={onKeyDown}
+                    onPaste={onPaste}
+                    placeholder="Message pour Claude… (Entrée pour envoyer, Maj+Entrée pour une nouvelle ligne, / pour les commandes, ⌘V pour coller une image)"
+                    rows={2}
+                />
                 {running ? (
                     <button className="danger" onClick={onStop} title="Interrompre Claude">
                         Stop
                     </button>
                 ) : (
-                    <button className="primary" onClick={submit} disabled={!text.trim()}>
+                    <button className="primary" onClick={submit} disabled={!canSend}>
                         Envoyer
                     </button>
                 )}

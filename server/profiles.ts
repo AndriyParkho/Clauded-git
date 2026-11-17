@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DATA_DIR } from './config.js';
 import { defaultBranch, remoteBranchExists } from './git.js';
@@ -27,6 +27,11 @@ export interface Profile {
     reviewSkill: string | null;
     /** Consignes ajoutées au prompt d'implémentation. */
     instructions: string;
+    /**
+     * Commande zsh (fonctions du `.zshrc` comprises) qui fait pointer Bruno sur un checkout :
+     * `{path}` = le dépôt ou le worktree choisi. Null : pas de bouton Bruno.
+     */
+    bruno: string | null;
 }
 
 const PROFILES_DIR = join(DATA_DIR, 'profiles');
@@ -82,6 +87,8 @@ async function guessProfile(repo: Repo): Promise<Profile> {
         commands,
         reviewSkill: null,
         instructions: '',
+        // Une collection Bruno dans le dépôt : la fonction `bru-use` du .zshrc la bascule.
+        bruno: (await stat(join(repo.path, 'bruno')).then((s) => s.isDirectory()).catch(() => false)) ? 'bru-use {path}' : null,
     };
 }
 

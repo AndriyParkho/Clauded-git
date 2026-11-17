@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { useCallback } from 'react';
 import { AskCard } from './AskCard';
 import { Composer } from './Composer';
+import { McpDialog } from './McpCard';
 import { MessageList } from './MessageList';
 import { StatusBar } from './StatusBar';
 import { useStore } from '../../store';
@@ -15,9 +16,11 @@ interface Props {
     /** Panneau latéral (issue, diff, sortie de commande, PR). */
     panel?: ReactNode;
     subtitle?: ReactNode;
+    /** Panneau élargi (diff de review). */
+    wide?: boolean;
 }
 
-export function ChatView({ run, toolbar, panel, subtitle }: Props): ReactElement {
+export function ChatView({ run, toolbar, panel, subtitle, wide }: Props): ReactElement {
     const view = useStore((s) => s.views[run.id]);
     const repo = useStore((s) => s.repos.find((r) => r.id === run.repoId));
     const draft = useStore((s) => s.drafts[run.id]);
@@ -47,13 +50,19 @@ export function ChatView({ run, toolbar, panel, subtitle }: Props): ReactElement
                         running={run.state === 'running'}
                         draft={draft}
                         onDraftConsumed={consumeDraft}
-                        onSend={(text) => send({ type: 'prompt', runId: run.id, text })}
+                        onSend={(text, images) =>
+                            // `/mcp` ouvre la fenêtre des serveurs MCP ; il n'est pas envoyé à la conversation.
+                            text.trim() === '/mcp' && images.length === 0
+                                ? send({ type: 'mcp', runId: run.id, action: 'status' })
+                                : send({ type: 'prompt', runId: run.id, text, ...(images.length ? { images } : {}) })
+                        }
                         onStop={() => send({ type: 'interrupt', runId: run.id })}
                     />
                     <StatusBar run={run} models={view?.models ?? []} permissions={view?.permissions.length ?? 0} usage={view?.usage} />
                 </div>
-                {panel && <aside className="panel">{panel}</aside>}
+                {panel && <aside className={`panel ${wide ? 'wide' : ''}`}>{panel}</aside>}
             </div>
+            {view?.mcp && <McpDialog status={view.mcp} />}
         </div>
     );
 }

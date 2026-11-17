@@ -2,44 +2,16 @@ import type { ReactElement } from 'react';
 import { useCallback, useEffect, useState } from 'react';
 import { api, type Profile } from '../../api';
 import { useStore, type Panel } from '../../store';
-import { send } from '../../ws';
 import { ChatView } from '../chat/ChatView';
 import { IssueBody } from '../issues/IssueBody';
-import type { JobInfo, Run, WorktreeInfo } from '../../../../shared/protocol';
-
-function duration(job: JobInfo): string {
-    const end = job.endedAt ? new Date(job.endedAt).getTime() : Date.now();
-    const seconds = Math.round((end - new Date(job.startedAt).getTime()) / 1000);
-    return seconds < 60 ? `${seconds} s` : `${Math.floor(seconds / 60)} min ${String(seconds % 60).padStart(2, '0')}`;
-}
-
-function OpenMenu({ run }: { run: Run }): ReactElement {
-    const notify = useStore((s) => s.notify);
-    const [open, setOpen] = useState(false);
-    const openIn = async (app: 'vscode' | 'finder' | 'terminal' | 'iterm'): Promise<void> => {
-        setOpen(false);
-        try {
-            await api.openIn(run.id, app);
-        } catch (error) {
-            notify(String(error), run.id);
-        }
-    };
-    return (
-        <span className="menu">
-            <button onClick={() => setOpen(!open)} title={run.cwd}>
-                Ouvrir ▾
-            </button>
-            {open && (
-                <div className="menu-items" onMouseLeave={() => setOpen(false)}>
-                    <button onClick={() => void openIn('vscode')}>VS Code</button>
-                    <button onClick={() => void openIn('finder')}>Finder</button>
-                    <button onClick={() => void openIn('terminal')}>Terminal</button>
-                    <button onClick={() => void openIn('iterm')}>iTerm</button>
-                </div>
-            )}
-        </span>
-    );
-}
+import { DiffBrowser, DiffSummary } from '../DiffView';
+import { CommandTools, JobsPanel } from '../jobs/Commands';
+import { MergeBaseButton, MergeIntegrationButton } from '../MergeIntegration';
+import { parseDiff } from '../../../../shared/diff';
+import { BrunoButton } from '../BrunoButton';
+import { OpenMenu } from '../OpenMenu';
+import { PullInfo } from '../pulls/PullInfo';
+import type { JobInfo, PullDetail, Run, WorktreeInfo } from '../../../../shared/protocol';
 
 function DiffPanel({ run }: { run: Run }): ReactElement {
     const [diff, setDiff] = useState<{ stat: string; patch: string } | undefined>();
@@ -54,69 +26,60 @@ function DiffPanel({ run }: { run: Run }): ReactElement {
     if (error) return <div className="error pad">{error}</div>;
     if (!diff) return <div className="muted pad">chargement du diff…</div>;
     if (!diff.patch.trim()) return <div className="muted pad">Aucune différence avec origin/{run.baseBranch ?? 'base'}.</div>;
+    const files = parseDiff(diff.patch);
     return (
-        <div className="patch-wrap">
-            <pre className="patch-stat">{diff.stat}</pre>
-            <pre className="patch">
-                {diff.patch.split('\n').map((line, i) => (
-                    <span key={i} className={line.startsWith('+') && !line.startsWith('+++') ? 'add' : line.startsWith('-') && !line.startsWith('---') ? 'del' : line.startsWith('@@') ? 'hunk' : line.startsWith('diff ') ? 'file' : ''}>
-                        {line}
-                        {'\n'}
-                    </span>
-                ))}
-            </pre>
+        <div className="review">
+            <div className="review-head diff-head">
+                <span className="muted">
+                    Changements par rapport à <span className="mono">origin/{run.baseBranch ?? 'base'}</span>
+                </span>
+                <span className="spacer" />
+                <DiffSummary files={files} />
+                <button className="small" onClick={load} title="Recharger le diff">
+                    ↻
+                </button>
+            </div>
+            <DiffBrowser files={files} />
         </div>
     );
 }
 
-function JobsPanel({ run, jobs }: { run: Run; jobs: JobInfo[] }): ReactElement {
+/** PR de la branche : checks, reviews et commentaires, avec l'envoi des commentaires non résolus au chat. */
+function PullOfBranch({ run, number }: { run: Run; number: number }): ReactElement {
     const notify = useStore((s) => s.notify);
-    const upsertRun = useStore((s) => s.upsertRun);
-    const setActive = useStore((s) => s.setActive);
-    const ordered = [...jobs].reverse();
+    const [pull, setPull] = useState<PullDetail | null | undefined>();
+    const [sending, setSending] = useState(false);
+    useEffect(() => {
+        api.runPull(run.id)
+            .then((r) => setPull(r.pull))
+            .catch((e: unknown) => notify(String(e), run.id));
+    }, [run.id, number, notify]);
 
-    const sendToChat = (job: JobInfo): void => {
-        const tail = job.output.slice(-8000);
-        const text = job.status === 'failed' ? `La commande « ${job.name} » lancée par l'app a échoué (code ${job.code}). Analyse la sortie ci-dessous, corrige, et relance ce qu'il faut.` : `Sortie de la commande « ${job.name} » lancée par l'app :`;
-        send({ type: 'prompt', runId: run.id, text: `${text}\n\n\`\`\`\n${tail}\n\`\`\`` });
-    };
-
-    const resolve = async (job: JobInfo): Promise<void> => {
+    const sendComments = async (): Promise<void> => {
+        setSending(true);
         try {
-            const merge = await api.resolveMerge(run.id, job.id);
-            upsertRun(merge);
-            setActive(merge.id);
+            const { sent } = await api.sendReviewComments(run.id);
+            if (sent === 0) notify('Aucun commentaire de review non résolu.', run.id);
         } catch (error) {
             notify(String(error), run.id);
+        } finally {
+            setSending(false);
         }
     };
 
-    if (ordered.length === 0) return <div className="muted pad">Aucune commande lancée pour cet onglet.</div>;
+    if (pull === undefined) return <div className="muted">chargement de la PR…</div>;
+    if (pull === null) return <div className="muted">PR introuvable.</div>;
+    const open = pull.threads.filter((t) => !t.isResolved).length;
     return (
-        <div className="jobs">
-            {ordered.map((job) => (
-                <details key={job.id} className={`job job-${job.status}`} open={job === ordered[0]}>
-                    <summary>
-                        <span className={`dot dot-${job.status === 'running' ? 'running' : job.status === 'ok' ? 'idle' : 'error'}`} />
-                        <span className="job-name">{job.name}</span>
-                        <span className="muted">
-                            {job.status === 'running' ? 'en cours' : job.status === 'ok' ? 'ok' : `échec (${job.code})`} · {duration(job)}
-                        </span>
-                    </summary>
-                    <div className="job-actions">
-                        <button className="small" onClick={() => sendToChat(job)}>
-                            Envoyer au chat
-                        </button>
-                        {job.status === 'failed' && job.name.startsWith('Merge →') && (
-                            <button className="small" onClick={() => void resolve(job)}>
-                                Résoudre les conflits dans un chat
-                            </button>
-                        )}
-                    </div>
-                    <pre className="job-output">{job.output || '…'}</pre>
-                </details>
-            ))}
-        </div>
+        <PullInfo
+            pull={pull}
+            repoId={run.repoId ?? 0}
+            actions={
+                <button className="small" disabled={sending || open === 0 || run.state === 'running'} onClick={() => void sendComments()} title="Envoie les commentaires de review non résolus à la session, qui les traite">
+                    Envoyer les commentaires au chat ({open})
+                </button>
+            }
+        />
     );
 }
 
@@ -137,17 +100,7 @@ function PrPanel({ run, info, onRefresh }: { run: Run; info: WorktreeInfo | unde
                     </div>
                     {info.conflicted.length > 0 && <div className="error">Conflits : {info.conflicted.join(', ')}</div>}
                     {info.pr ? (
-                        <div className="pr-card">
-                            <div>
-                                <span className={`badge ${info.pr.state === 'OPEN' ? 'open' : info.pr.state === 'MERGED' ? 'merged' : 'closed'}`}>{info.pr.isDraft ? 'draft' : info.pr.state.toLowerCase()}</span>{' '}
-                                <a href={info.pr.url} target="_blank" rel="noreferrer">
-                                    PR #{info.pr.number}
-                                </a>{' '}
-                                → {info.pr.baseRefName}
-                            </div>
-                            <div>{info.pr.title}</div>
-                            <div className="muted">Checks, commentaires de review et envoi au chat : phase 2.</div>
-                        </div>
+                        <PullOfBranch run={run} number={info.pr.number} />
                     ) : (
                         <div className="muted">Pas encore de PR pour {run.branch}. Claude l'ouvre à la fin de l'implémentation ; sinon demande-lui dans le chat.</div>
                     )}
@@ -157,13 +110,16 @@ function PrPanel({ run, info, onRefresh }: { run: Run; info: WorktreeInfo | unde
     );
 }
 
-const PANEL_TITLES: Record<Panel, string> = { issue: 'Issue', diff: 'Diff', jobs: 'Commandes', pr: 'Branche et PR' };
+const PANEL_TITLES: Record<Panel, string> = { issue: 'Issue', diff: 'Diff', jobs: 'Logs des commandes', pr: 'Branche et PR', review: 'Review', info: 'Description' };
+
+// Référence stable : `?? []` dans un sélecteur zustand recrée un tableau à chaque lecture et boucle.
+const NO_JOBS: JobInfo[] = [];
 
 export function ImplementView({ run }: { run: Run }): ReactElement {
     const repo = useStore((s) => s.repos.find((r) => r.id === run.repoId));
     const panel = useStore((s) => s.panels[run.id] ?? null);
     const setPanel = useStore((s) => s.setPanel);
-    const jobs = useStore((s) => s.views[run.id]?.jobs ?? []);
+    const jobs = useStore((s) => s.views[run.id]?.jobs ?? NO_JOBS);
     const notify = useStore((s) => s.notify);
     const [profile, setProfile] = useState<Profile | undefined>();
     const [info, setInfo] = useState<WorktreeInfo | undefined>();
@@ -190,45 +146,26 @@ export function ImplementView({ run }: { run: Run }): ReactElement {
     }, [jobs, refreshInfo]);
 
     const toggle = (next: Panel): void => setPanel(run.id, panel === next ? null : next);
-    const runJob = async (action: () => Promise<JobInfo>): Promise<void> => {
-        setPanel(run.id, 'jobs');
-        try {
-            await action();
-        } catch (error) {
-            notify(String(error), run.id);
-        }
-    };
-
     const running = jobs.some((j) => j.status === 'running');
     const base = run.baseBranch ?? profile?.baseBranch ?? 'master';
-    const integration = profile?.integrationBranch ?? null;
-    const commands = Object.keys(profile?.commands ?? {});
 
     const toolbar = (
         <>
-            <OpenMenu run={run} />
+            <OpenMenu path={run.cwd} runId={run.id} />
+            {repo && <BrunoButton repoId={repo.id} path={run.worktree ?? run.cwd} />}
             <button className={panel === 'issue' ? 'active' : ''} onClick={() => toggle('issue')}>
                 Issue
             </button>
             <button className={panel === 'diff' ? 'active' : ''} onClick={() => toggle('diff')}>
                 Diff
             </button>
-            {commands.map((name) => (
-                <button key={name} disabled={running} onClick={() => void runJob(() => api.command(run.id, name))} title={profile?.commands[name]}>
-                    {name}
-                </button>
-            ))}
-            <button disabled={running} onClick={() => void runJob(() => api.mergeBase(run.id))} title={`git fetch && git merge origin/${base} && git push`}>
-                Merge {base}
-            </button>
-            {integration && (
-                <button disabled={running} onClick={() => void runJob(() => api.mergeIntegration(run.id))} title={`Merge de ${run.branch} dans ${integration}, puis push`}>
-                    Merge → {integration}
-                </button>
+            {repo && run.type !== 'merge' && (
+                <>
+                    <MergeBaseButton repoId={repo.id} base={base} what={run.branch ?? 'la branche'} start={() => api.mergeBase(run.id)} disabled={running} />
+                    <MergeIntegrationButton repoId={repo.id} what={run.branch ?? 'la branche'} start={() => api.mergeIntegration(run.id)} disabled={running} />
+                </>
             )}
-            <button className={panel === 'jobs' ? 'active' : ''} onClick={() => toggle('jobs')}>
-                Commandes{jobs.length ? ` (${jobs.length})` : ''}
-            </button>
+            <CommandTools run={run} jobs={jobs} jobsOpen={panel === 'jobs'} onShowJobs={(open) => setPanel(run.id, open ? 'jobs' : null)} />
             <button className={panel === 'pr' ? 'active' : ''} onClick={() => toggle('pr')}>
                 {info?.pr ? `PR #${info.pr.number}` : 'PR'}
             </button>
@@ -260,6 +197,7 @@ export function ImplementView({ run }: { run: Run }): ReactElement {
             run={run}
             toolbar={toolbar}
             subtitle={subtitle}
+            wide={panel === 'diff'}
             panel={
                 panel && (
                     <>

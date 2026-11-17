@@ -1,4 +1,5 @@
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { ImageAttachment } from '../../../../shared/protocol';
 
 /** Un bloc de contenu de l'API, lu de façon tolérante. */
 interface Block {
@@ -11,6 +12,7 @@ interface Block {
     tool_use_id?: string;
     content?: unknown;
     is_error?: boolean;
+    source?: { type: string; media_type?: string; data?: string };
 }
 
 export interface ToolItem {
@@ -25,7 +27,7 @@ export interface ToolItem {
 }
 
 export type Item =
-    | { kind: 'user'; key: string; text: string }
+    | { kind: 'user'; key: string; text: string; images?: ImageAttachment[] }
     | { kind: 'system-note'; key: string; title: string; text: string }
     | { kind: 'local'; key: string; text: string }
     | { kind: 'text'; key: string; text: string }
@@ -72,6 +74,9 @@ export function buildItems(messages: SDKMessage[]): Item[] {
     const tools = new Map<string, ToolItem>();
     const target = (parent: string | null | undefined): Item[] => (parent && tools.get(parent)?.children) || items;
     let initShown = false;
+    // `/mcp` tapé dans le terminal ou VS Code laisse dans le transcript son écho puis sa sortie :
+    // ni l'un ni l'autre n'est affiché (l'état MCP s'ouvre dans une fenêtre, hors du fil).
+    let hideNextLocal = false;
 
     messages.forEach((message, index) => {
         const key = (message as { uuid?: string }).uuid ?? `m${index}`;
@@ -80,23 +85,39 @@ export function buildItems(messages: SDKMessage[]): Item[] {
                 const content = message.message.content as string | Block[];
                 const list = target(message.parent_tool_use_id);
                 const synthetic = Boolean((message as { isSynthetic?: boolean }).isSynthetic);
-                const pushText = (text: string, k: string): void => {
-                    if (!text.trim()) return;
+                const pushText = (text: string, k: string, images?: ImageAttachment[]): void => {
+                    if (!text.trim() && !images?.length) return;
+                    if (tag(text, 'command-name') === '/mcp' || text.trim() === '/mcp') {
+                        hideNextLocal = true;
+                        return;
+                    }
                     const special = classifyUser(text, synthetic);
-                    list.push(special ? { ...special, key: k } : { kind: 'user', key: k, text });
+                    if (special?.kind === 'local' && hideNextLocal) {
+                        hideNextLocal = false;
+                        return;
+                    }
+                    hideNextLocal = false;
+                    list.push(special ? { ...special, key: k } : { kind: 'user', key: k, text, ...(images?.length ? { images } : {}) });
                 };
                 if (typeof content === 'string') {
                     pushText(content, key);
                     break;
                 }
+                // Les images d'un message sont rattachées à son texte (une seule bulle).
+                const images: ImageAttachment[] = [];
+                const texts: Array<{ text: string; k: string }> = [];
                 content.forEach((block, i) => {
                     if (block.type === 'tool_result' && block.tool_use_id) {
                         const tool = tools.get(block.tool_use_id);
                         if (tool) tool.result = { content: resultText(block.content), isError: Boolean(block.is_error) };
                     } else if (block.type === 'text' && block.text) {
-                        pushText(block.text, `${key}-${i}`);
+                        texts.push({ text: block.text, k: `${key}-${i}` });
+                    } else if (block.type === 'image' && block.source?.type === 'base64' && block.source.data) {
+                        images.push({ mediaType: block.source.media_type as ImageAttachment['mediaType'], data: block.source.data });
                     }
                 });
+                if (texts.length === 0 && images.length > 0) pushText('', `${key}-img`, images);
+                texts.forEach((t, i) => pushText(t.text, t.k, i === texts.length - 1 ? images : undefined));
                 break;
             }
             case 'assistant': {

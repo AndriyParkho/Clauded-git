@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { CanUseTool, Options, PermissionMode, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { ImageAttachment } from '../../shared/protocol.js';
+
+type MessageParam = SDKUserMessage['message'];
 
 /**
  * File de prompts consommée par le SDK en mode « entrée en flux » : la session reste ouverte entre
@@ -10,12 +13,16 @@ export class PromptQueue implements AsyncIterable<SDKUserMessage> {
     private readonly waiters: Array<(result: IteratorResult<SDKUserMessage, void>) => void> = [];
     private closed = false;
 
-    /** Ajoute un prompt et renvoie le message tel qu'il sera envoyé (avec son uuid). */
-    push(text: string): SDKUserMessage {
+    /** Ajoute un prompt (texte et images jointes) et renvoie le message tel qu'il sera envoyé (avec son uuid). */
+    push(text: string, images: ImageAttachment[] = []): SDKUserMessage {
         if (this.closed) throw new Error('file de prompts fermée');
+        const content: MessageParam['content'] =
+            images.length === 0
+                ? text
+                : [...(text ? [{ type: 'text' as const, text }] : []), ...images.map((image) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: image.mediaType, data: image.data } }))];
         const message: SDKUserMessage = {
             type: 'user',
-            message: { role: 'user', content: text },
+            message: { role: 'user', content },
             parent_tool_use_id: null,
             uuid: randomUUID(),
         };
