@@ -82,6 +82,24 @@ db.exec(`
         created_at      TEXT NOT NULL,
         PRIMARY KEY (repo_id, issue_number)
     );
+
+    -- Versions successives du fichier d'un onglet spec (une par écriture qui change le contenu).
+    CREATE TABLE IF NOT EXISTS spec_version (
+        id          INTEGER PRIMARY KEY,
+        run_id      INTEGER NOT NULL REFERENCES run(id) ON DELETE CASCADE,
+        content     TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS spec_version_run ON spec_version (run_id, id);
+
+    -- Découpage d'une spec en issues (JSON : parent et issues), modifiable avant création.
+    CREATE TABLE IF NOT EXISTS spec_plan (
+        run_id          INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+        repo_id         INTEGER REFERENCES repo(id) ON DELETE SET NULL,
+        data            TEXT NOT NULL,
+        imported_at     TEXT,
+        imported_mtime  REAL
+    );
 `);
 
 // Migrations additives : une colonne manquante est ajoutée, jamais supprimée.
@@ -90,6 +108,7 @@ const RUN_MIGRATIONS: Array<[column: string, definition: string]> = [
     ['install_status', 'TEXT'],
     ['archived', 'INTEGER NOT NULL DEFAULT 0'],
     ['pr_number', 'INTEGER'],
+    ['spec_path', 'TEXT'],
 ];
 const runColumns = new Set(db.prepare('PRAGMA table_info(run)').all().map((row) => String(row.name)));
 for (const [column, definition] of RUN_MIGRATIONS) {
@@ -182,6 +201,7 @@ function toRun(row: Row): Run {
         installStatus: str(row.install_status) as InstallStatus | null,
         lastError: str(row.last_error),
         archived: num(row.archived) === 1,
+        specPath: str(row.spec_path),
         createdAt: text(row.created_at),
         updatedAt: text(row.updated_at),
     };
@@ -210,14 +230,15 @@ export interface NewRun {
     baseBranch?: string | null;
     worktree?: string | null;
     installStatus?: InstallStatus | null;
+    specPath?: string | null;
 }
 
 export function insertRun(run: NewRun): Run {
     const at = now();
     const result = db
         .prepare(
-            `INSERT INTO run (repo_id, type, cwd, title, session_id, state, permission_mode, issue_number, pr_number, branch, base_branch, worktree, install_status, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO run (repo_id, type, cwd, title, session_id, state, permission_mode, issue_number, pr_number, branch, base_branch, worktree, install_status, spec_path, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
             run.repoId,
@@ -232,6 +253,7 @@ export function insertRun(run: NewRun): Run {
             run.baseBranch ?? null,
             run.worktree ?? null,
             run.installStatus ?? null,
+            run.specPath ?? null,
             at,
             at,
         );
@@ -440,4 +462,57 @@ export function saveBatchItem(item: Omit<BatchItem, 'createdAt'>): void {
 
 export function deleteBatchItem(repoId: number, issueNumber: number): void {
     db.prepare('DELETE FROM batch_item WHERE repo_id = ? AND issue_number = ?').run(repoId, issueNumber);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Page Spec : onglets, versions du fichier, découpage en issues
+// ---------------------------------------------------------------------------------------------
+
+/** Tous les onglets spec (archivés compris), les plus récents d'abord. */
+export function listSpecRuns(): Run[] {
+    return db.prepare("SELECT * FROM run WHERE type = 'spec' ORDER BY updated_at DESC").all().map(toRun);
+}
+
+const SPEC_VERSIONS_KEPT = 200;
+
+export function latestSpecVersion(runId: number): { id: number; content: string } | undefined {
+    const row = db.prepare('SELECT id, content FROM spec_version WHERE run_id = ? ORDER BY id DESC LIMIT 1').get(runId);
+    return row ? { id: num(row.id), content: text(row.content) } : undefined;
+}
+
+export function insertSpecVersion(runId: number, content: string): void {
+    db.prepare('INSERT INTO spec_version (run_id, content, created_at) VALUES (?, ?, ?)').run(runId, content, now());
+    db.prepare('DELETE FROM spec_version WHERE run_id = ? AND id NOT IN (SELECT id FROM spec_version WHERE run_id = ? ORDER BY id DESC LIMIT ?)').run(runId, runId, SPEC_VERSIONS_KEPT);
+}
+
+/** Versions du fichier, la plus récente en dernier ; `lines` = nombre de lignes. */
+export function listSpecVersions(runId: number): Array<{ id: number; at: string; lines: number }> {
+    return db
+        .prepare("SELECT id, created_at, length(content) - length(replace(content, char(10), '')) + 1 AS lines FROM spec_version WHERE run_id = ? ORDER BY id")
+        .all(runId)
+        .map((row) => ({ id: num(row.id), at: text(row.created_at), lines: num(row.lines) }));
+}
+
+export function getSpecVersion(id: number): { runId: number; content: string } | undefined {
+    const row = db.prepare('SELECT run_id, content FROM spec_version WHERE id = ?').get(id);
+    return row ? { runId: num(row.run_id), content: text(row.content) } : undefined;
+}
+
+export interface SpecPlanRow {
+    repoId: number | null;
+    data: string;
+    importedAt: string | null;
+    importedMtime: number | null;
+}
+
+export function getSpecPlanRow(runId: number): SpecPlanRow | undefined {
+    const row = db.prepare('SELECT * FROM spec_plan WHERE run_id = ?').get(runId);
+    return row ? { repoId: numOrNull(row.repo_id), data: text(row.data), importedAt: str(row.imported_at), importedMtime: numOrNull(row.imported_mtime) } : undefined;
+}
+
+export function saveSpecPlanRow(runId: number, row: SpecPlanRow): void {
+    db.prepare(
+        `INSERT INTO spec_plan (run_id, repo_id, data, imported_at, imported_mtime) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (run_id) DO UPDATE SET repo_id = excluded.repo_id, data = excluded.data, imported_at = excluded.imported_at, imported_mtime = excluded.imported_mtime`,
+    ).run(runId, row.repoId, row.data, row.importedAt, row.importedMtime);
 }

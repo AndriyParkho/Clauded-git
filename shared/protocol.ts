@@ -51,6 +51,8 @@ export interface Run {
     lastError: string | null;
     /** Onglet fermé : plus affiché, mais gardé dans l'historique de son issue et reprenable. */
     archived: boolean;
+    /** Fichier de spec (chemin absolu) d'un onglet `spec`. */
+    specPath: string | null;
     createdAt: string;
     updatedAt: string;
 }
@@ -504,8 +506,65 @@ export interface BrunoState {
     active: string | null;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Page Spec
+// ---------------------------------------------------------------------------------------------
+
+/** Une version du fichier de spec, enregistrée à chaque écriture qui en change le contenu. */
+export interface SpecVersion {
+    id: number;
+    at: string;
+    lines: number;
+}
+
+/** Fichier de spec d'un onglet `spec` : contenu actuel (`null` tant qu'il n'existe pas) et versions. */
+export interface SpecFile {
+    runId: number;
+    path: string;
+    content: string | null;
+    versions: SpecVersion[];
+}
+
+/** Issue du découpage proposé par Claude, modifiable avant sa création sur GitHub. */
+export interface SpecIssue {
+    /** Identifiant court dans le découpage (`api`, `ui`…), référencé par `dependsOn`. */
+    key: string;
+    title: string;
+    body: string;
+    dependsOn: string[];
+    /** Décochée : pas créée. */
+    include: boolean;
+    /** Numéro et lien une fois créée sur GitHub. */
+    number: number | null;
+    url: string | null;
+}
+
+/** Découpage d'une spec en issues : une parente (facultative) et ses sous-issues. */
+export interface SpecPlan {
+    runId: number;
+    /** Fichier JSON que la session écrit ; l'app l'importe dès qu'il change. */
+    file: string;
+    /** Dépôt où créer les issues. */
+    repoId: number | null;
+    parent: SpecIssue | null;
+    issues: SpecIssue[];
+    importedAt: string | null;
+}
+
+/** Passage cité (d'une réponse de Claude ou de la spec), envoyé avec le message suivant. */
+export interface Quote {
+    id: string;
+    text: string;
+    /** D'où vient le passage : `SPEC.md`, ou absent pour le fil du chat. */
+    source?: string;
+    /** Annotation : ce que tu en dis. */
+    comment?: string;
+}
+
 export type ServerMessage =
     | { type: 'hello'; runs: Run[]; repos: Repo[]; account?: AccountUsage }
+    | { type: 'spec'; spec: SpecFile }
+    | { type: 'specPlan'; plan: SpecPlan }
     | { type: 'batch'; items: BatchItem[] }
     | { type: 'account'; account: AccountUsage }
     | { type: 'sdk'; runId: number; message: SDKMessage }

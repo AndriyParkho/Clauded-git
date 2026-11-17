@@ -35,6 +35,14 @@ read:project` sinon). Le détail d'une issue liste son historique : les onglets 
 onglet l'archive, « Reprendre » le rouvre) et les sessions Claude Code de sa branche, reconnues par
 le numéro d'issue dans le nom de branche (`feature/9307-…`) ou par le dossier `.worktrees/issue-<n>`.
 
+## Spec
+
+L'onglet « Spec » ouvre un chat dans un dépôt (ou un dossier, créé au besoin) avec, à côté, le
+fichier de spec (`SPEC.md` par défaut) rendu à chaque écriture, ses versions (gardées en base, 200
+par spec) et le découpage en issues. Le découpage est écrit par la session dans
+`~/.clauded-git/specs/run-<id>.issues.json` ; la création des issues (et de leurs liens sous-issue et
+« bloquée par ») est faite par l'app avec `gh`, comme la publication des reviews.
+
 ## Profils de dépôt
 
 Au premier usage d'un dépôt, l'app écrit `~/.clauded-git/profiles/<owner>__<name>.json` avec des
@@ -52,6 +60,8 @@ l'onglet d'implémentation), `reviewSkill`, `instructions` (ajoutées au prompt 
   - `implement.ts` : flux « Implémenter » (branche liée, worktree, install, prompt), merges.
   - `jobs.ts` : commandes lancées par l'app (install, tests, merges), sortie diffusée en flux.
   - `profiles.ts` : profil par dépôt.
+  - `spec.ts` : page Spec (fichier suivi et versionné, découpage en issues, création sur GitHub).
+  - `watch.ts` : surveillance d'un dossier, avec relevé périodique si le système la refuse.
 - `web/` : React + Vite. `store.ts` (état), `ws.ts` (WebSocket), `components/chat/` (fil, outils,
   questions, saisie, barre d'état).
 - `shared/protocol.ts` : types communs (modèle, messages WebSocket).

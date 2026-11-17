@@ -23,6 +23,9 @@ import type {
     RunType,
     SessionHistoryItem,
     SkillInfo,
+    SpecFile,
+    SpecIssue,
+    SpecPlan,
     WorktreeInfo,
 } from '../../shared/protocol';
 
@@ -133,4 +136,14 @@ export const api = {
     patchDraft: (repoId: number, number: number, id: number, patch: Partial<Pick<ReviewDraft, 'body' | 'label'>>) => request<ReviewState>('PATCH', `/api/repos/${repoId}/pulls/${number}/review/drafts/${id}`, patch),
     deleteDraft: (repoId: number, number: number, id: number) => request<ReviewState>('DELETE', `/api/repos/${repoId}/pulls/${number}/review/drafts/${id}`),
     publishReview: (repoId: number, number: number) => request<ReviewState>('POST', `/api/repos/${repoId}/pulls/${number}/review/publish`),
+
+    specs: () => request<Run[]>('GET', '/api/specs'),
+    /** Nouvel onglet spec dans un dépôt ou un dossier (créé au besoin) ; `draft` = consigne pour la saisie. */
+    startSpec: (body: { repoId?: number; cwd?: string; file?: string }) => request<{ run: Run; draft: string }>('POST', '/api/specs', body),
+    spec: (runId: number) => request<SpecFile>('GET', `/api/runs/${runId}/spec`),
+    specVersion: (versionId: number) => request<{ content: string }>('GET', `/api/spec-versions/${versionId}`),
+    specPlan: (runId: number) => request<SpecPlan>('GET', `/api/runs/${runId}/spec/plan`),
+    saveSpecPlan: (runId: number, patch: { repoId?: number | null; parent?: SpecIssue | null; issues?: SpecIssue[] }) => request<SpecPlan>('PUT', `/api/runs/${runId}/spec/plan`, patch),
+    generateSpecPlan: (runId: number) => request<{ ok: true }>('POST', `/api/runs/${runId}/spec/plan/generate`),
+    createSpecIssues: (runId: number, opId?: string) => request<{ plan: SpecPlan; warnings: string[] }>('POST', `/api/runs/${runId}/spec/plan/create`, { opId }),
 };

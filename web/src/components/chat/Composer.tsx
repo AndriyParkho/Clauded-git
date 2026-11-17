@@ -10,11 +10,13 @@ interface Props {
     /** Texte à placer dans la saisie (une fois), par exemple le contexte d'une issue. */
     draft?: string | undefined;
     onDraftConsumed?: () => void;
+    /** Des passages cités attendent : on peut envoyer sans rien taper. */
+    hasQuotes?: boolean;
     onSend: (text: string, images: ImageAttachment[]) => void;
     onStop: () => void;
 }
 
-export function Composer({ commands, running, draft, onDraftConsumed, onSend, onStop }: Props): ReactElement {
+export function Composer({ commands, running, draft, onDraftConsumed, hasQuotes, onSend, onStop }: Props): ReactElement {
     const [text, setText] = useState('');
     const [images, setImages] = useState<ImageAttachment[]>([]);
     const [dragging, setDragging] = useState(false);
@@ -82,7 +84,7 @@ export function Composer({ commands, running, draft, onDraftConsumed, onSend, on
 
     const submit = (): void => {
         const value = text.trim();
-        if (!value && images.length === 0) return;
+        if (!value && images.length === 0 && !hasQuotes) return;
         onSend(value, images);
         setText('');
         setImages([]);
@@ -113,7 +115,7 @@ export function Composer({ commands, running, draft, onDraftConsumed, onSend, on
         }
     };
 
-    const canSend = Boolean(text.trim()) || images.length > 0;
+    const canSend = Boolean(text.trim()) || images.length > 0 || Boolean(hasQuotes);
 
     return (
         <div

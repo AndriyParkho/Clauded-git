@@ -39,9 +39,20 @@
   cochés d'office ; la suppression tourne en tâche de fond, sortie consultable.
 - ✅ Bouton « Bruno » : bascule l'environnement Bruno sur un worktree avec `bru-use` (champ `bruno`
   du profil, deviné quand le dépôt a un dossier `bruno/`).
+- ✅ Phase 4, page Spec : onglet « Spec » (nouvelle spec dans un dépôt ou un dossier créé au besoin,
+  liste des specs, fermées comprises et reprenables), onglet spec avec le chat et, à côté, le fichier
+  rendu en direct (markdown et mermaid), ses versions (une par écriture qui change le contenu,
+  comparées en diff ligne à ligne) et le découpage en issues. Annotations : sélectionner un passage
+  → « Commenter… » ou « Citer » ; la pile part avec le message suivant. Même mécanique dans le fil
+  de tous les chats (« citer pour répondre »). Découpage : Claude l'écrit dans
+  `~/.clauded-git/specs/run-<id>.issues.json`, l'app l'importe, tu le corriges (titres, corps,
+  dépendances, issues décochées), puis l'app crée les issues (assignées à toi, parente puis
+  sous-issues dans l'ordre des dépendances, liens sous-issue et « bloquée par », « Dépend de #n »
+  dans le corps) ; une relance ne recrée rien. « Implémenter tout » ouvre le lancement en lot.
 - ⏳ À tester en vrai : `Implémenter` de bout en bout, les merges, les profils, la publication d'une
-  review, le worktree d'une PR venue d'un fork, un lot avec PR empilées, le nettoyage et Bruno.
-- Suite : phase 4 (page Spec).
+  review, le worktree d'une PR venue d'un fork, un lot avec PR empilées, le nettoyage, Bruno, et la
+  page Spec (surtout les mutations GitHub `addSubIssue` / `addBlockedBy`).
+- Suite : phase 5 (confort : notifications, Electron si besoin).
 
 ## 1. Le problème
 

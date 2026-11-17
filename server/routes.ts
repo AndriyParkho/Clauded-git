@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { basename, resolve } from 'node:path';
 import { cancelItem, forceStart, startBatch, type BatchRequest } from './batch.js';
-import { archiveRun, deleteDraft, deleteRepo, getRepo, getRun, insertDraft, insertRun, listBatchItems, listRepos, listRuns, saveReviewRow, updateDraft, updateRepo, updateRun } from './db.js';
+import { archiveRun, deleteDraft, deleteRepo, getRepo, getRun, insertDraft, insertRun, listBatchItems, listRepos, listRuns, listSpecRuns, saveReviewRow, updateDraft, updateRepo, updateRun } from './db.js';
 import { brunoState, switchBruno } from './bruno.js';
 import { listCleanup, startCleanup } from './cleanup.js';
 import { analyzeDependencies } from './dependencies.js';
@@ -17,8 +17,9 @@ import { addRepo, isDirectory, repoSessions, scanRepos } from './repos.js';
 import { importReviewFile, publishReview, reviewState } from './review.js';
 import { sessions } from './sessions/manager.js';
 import { listSkills } from './skills.js';
+import { createPlanIssues, generatePlan, getPlan, importPlanFile, readSpec, specVersionContent, specWatcher, startSpec, updatePlan, type NewSpec } from './spec.js';
 import { broadcast } from './ws.js';
-import type { IssueFilter, IssueState, OpenApp, PullFilter, Repo, RepoIssues, RepoPulls, ReviewDraft, ReviewEvent, ReviewState, RunType } from '../shared/protocol.js';
+import type { IssueFilter, IssueState, OpenApp, PullFilter, Repo, RepoIssues, RepoPulls, ReviewDraft, ReviewEvent, ReviewState, RunType, SpecIssue } from '../shared/protocol.js';
 
 interface CreateRunBody {
     repoId?: number;
@@ -235,6 +236,77 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     app.delete<{ Params: { id: string; number: string } }>('/api/repos/:id/batch/:number', async (request) => {
         cancelItem(Number(request.params.id), Number(request.params.number));
         return { ok: true };
+    });
+
+    // ---------------------------------------------------------------------------------------
+    // Page Spec
+    // ---------------------------------------------------------------------------------------
+
+    const fail = (reply: { code: (c: number) => { send: (b: unknown) => unknown } }, error: unknown, code = 400): unknown => reply.code(code).send({ error: error instanceof Error ? error.message : String(error) });
+
+    app.get('/api/specs', async () => listSpecRuns());
+
+    app.post<{ Body: NewSpec }>('/api/specs', async (request, reply) => {
+        try {
+            return await startSpec(request.body ?? {});
+        } catch (error) {
+            return fail(reply, error);
+        }
+    });
+
+    app.get<{ Params: { id: string } }>('/api/runs/:id/spec', async (request, reply) => {
+        try {
+            await specWatcher.watchRun(Number(request.params.id));
+            return await readSpec(Number(request.params.id));
+        } catch (error) {
+            return fail(reply, error, 404);
+        }
+    });
+
+    app.get<{ Params: { id: string } }>('/api/spec-versions/:id', async (request, reply) => {
+        try {
+            return { content: specVersionContent(Number(request.params.id)) };
+        } catch (error) {
+            return fail(reply, error, 404);
+        }
+    });
+
+    app.get<{ Params: { id: string } }>('/api/runs/:id/spec/plan', async (request, reply) => {
+        try {
+            const runId = Number(request.params.id);
+            return (await importPlanFile(runId)) ?? getPlan(runId);
+        } catch (error) {
+            return fail(reply, error, 404);
+        }
+    });
+
+    app.put<{ Params: { id: string }; Body: { repoId?: number | null; parent?: SpecIssue | null; issues?: SpecIssue[] } }>('/api/runs/:id/spec/plan', async (request, reply) => {
+        try {
+            const plan = updatePlan(Number(request.params.id), request.body ?? {});
+            broadcast({ type: 'specPlan', plan });
+            return plan;
+        } catch (error) {
+            return fail(reply, error);
+        }
+    });
+
+    app.post<{ Params: { id: string } }>('/api/runs/:id/spec/plan/generate', async (request, reply) => {
+        try {
+            await generatePlan(Number(request.params.id));
+            return { ok: true };
+        } catch (error) {
+            return fail(reply, error);
+        }
+    });
+
+    app.post<{ Params: { id: string }; Body: { opId?: string } }>('/api/runs/:id/spec/plan/create', async (request, reply) => {
+        try {
+            const result = await createPlanIssues(Number(request.params.id), request.body?.opId);
+            broadcast({ type: 'specPlan', plan: result.plan });
+            return result;
+        } catch (error) {
+            return fail(reply, error);
+        }
     });
 
     // ---------------------------------------------------------------------------------------

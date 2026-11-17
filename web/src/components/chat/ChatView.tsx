@@ -4,10 +4,14 @@ import { AskCard } from './AskCard';
 import { Composer } from './Composer';
 import { McpDialog } from './McpCard';
 import { MessageList } from './MessageList';
+import { QuoteSelection, QuoteStack, withQuotes } from './QuoteSelection';
 import { StatusBar } from './StatusBar';
 import { useStore } from '../../store';
 import { send } from '../../ws';
-import type { Run } from '../../../../shared/protocol';
+import type { Quote, Run } from '../../../../shared/protocol';
+
+// Référence stable pour le sélecteur zustand.
+const NO_QUOTES: Quote[] = [];
 
 interface Props {
     run: Run;
@@ -26,6 +30,8 @@ export function ChatView({ run, toolbar, panel, subtitle, wide }: Props): ReactE
     const draft = useStore((s) => s.drafts[run.id]);
     const setDraft = useStore((s) => s.setDraft);
     const consumeDraft = useCallback(() => setDraft(run.id, undefined), [run.id, setDraft]);
+    const quotes = useStore((s) => s.quotes[run.id] ?? NO_QUOTES);
+    const clearQuotes = useStore((s) => s.clearQuotes);
 
     return (
         <div className="chat">
@@ -41,21 +47,25 @@ export function ChatView({ run, toolbar, panel, subtitle, wide }: Props): ReactE
             </div>
             <div className="chat-body">
                 <div className="chat-main">
-                    {view ? <MessageList view={view} /> : <div className="messages-wrap muted pad">chargement…</div>}
+                    <QuoteSelection runId={run.id} className="quote-zone">
+                        {view ? <MessageList view={view} /> : <div className="messages-wrap muted pad">chargement…</div>}
+                    </QuoteSelection>
                     {view?.asks.map((ask) => (
                         <AskCard key={ask.id} ask={ask} />
                     ))}
+                    <QuoteStack runId={run.id} />
                     <Composer
                         commands={view?.commands ?? []}
                         running={run.state === 'running'}
                         draft={draft}
                         onDraftConsumed={consumeDraft}
-                        onSend={(text, images) =>
+                        hasQuotes={quotes.length > 0}
+                        onSend={(text, images) => {
                             // `/mcp` ouvre la fenêtre des serveurs MCP ; il n'est pas envoyé à la conversation.
-                            text.trim() === '/mcp' && images.length === 0
-                                ? send({ type: 'mcp', runId: run.id, action: 'status' })
-                                : send({ type: 'prompt', runId: run.id, text, ...(images.length ? { images } : {}) })
-                        }
+                            if (text.trim() === '/mcp' && images.length === 0 && quotes.length === 0) return send({ type: 'mcp', runId: run.id, action: 'status' });
+                            send({ type: 'prompt', runId: run.id, text: withQuotes(quotes, text), ...(images.length ? { images } : {}) });
+                            clearQuotes(run.id);
+                        }}
                         onStop={() => send({ type: 'interrupt', runId: run.id })}
                     />
                     <StatusBar run={run} models={view?.models ?? []} permissions={view?.permissions.length ?? 0} usage={view?.usage} />

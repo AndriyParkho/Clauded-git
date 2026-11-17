@@ -8,6 +8,8 @@ import { IssuesPage } from './components/issues/IssuesPage';
 import { PrView } from './components/pulls/PrView';
 import { PullsPage } from './components/pulls/PullsPage';
 import { ReposPage } from './components/ReposPage';
+import { SpecsPage } from './components/spec/SpecsPage';
+import { SpecView } from './components/spec/SpecView';
 import { api } from './api';
 import { MergeBaseButton, MergeIntegrationButton } from './components/MergeIntegration';
 import { ProgressOverlay } from './components/Progress';
@@ -30,8 +32,10 @@ export function App(): ReactElement {
     let content: ReactElement;
     if (page === 'repos') content = <ReposPage />;
     else if (page === 'pulls') content = <PullsPage />;
+    else if (page === 'specs') content = <SpecsPage />;
     else if (page === 'issues' || !run) content = <IssuesPage />;
     else if (run.type === 'implement' || run.type === 'merge') content = <ImplementView run={run} />;
+    else if (run.type === 'spec') content = <SpecView run={run} />;
     else if (run.type === 'pr') content = <PrView run={run} />;
     else if (run.repoId !== null && (run.issueNumber !== null || run.prNumber !== null)) {
         // Chat lié à une issue (ou une PR) : merge de master dans sa branche, et de sa branche dans develop.

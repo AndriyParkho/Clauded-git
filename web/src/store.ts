@@ -13,6 +13,7 @@ import type {
     PermissionEvent,
     ProgressStep,
     PullFilter,
+    Quote,
     Repo,
     RepoIssues,
     RepoPulls,
@@ -20,6 +21,8 @@ import type {
     Run,
     ServerMessage,
     SlashCommandInfo,
+    SpecFile,
+    SpecPlan,
     UsageInfo,
 } from '../../shared/protocol';
 
@@ -50,8 +53,8 @@ export interface Notice {
     runId?: number;
 }
 
-export type Page = 'chat' | 'issues' | 'pulls' | 'repos';
-export type Panel = 'issue' | 'diff' | 'jobs' | 'pr' | 'review' | 'info';
+export type Page = 'chat' | 'issues' | 'pulls' | 'specs' | 'repos';
+export type Panel = 'issue' | 'diff' | 'jobs' | 'pr' | 'review' | 'info' | 'spec' | 'versions' | 'plan';
 
 export interface PullsState {
     filter: PullFilter;
@@ -103,6 +106,12 @@ interface State {
     bruno: Record<number, BrunoState>;
     /** Dernier job de nettoyage lancé, par dépôt. */
     cleanupJobs: Record<number, string>;
+    /** Fichier de spec (contenu en direct, versions) par onglet spec. */
+    specs: Record<number, SpecFile>;
+    /** Découpage de la spec en issues, par onglet spec. */
+    specPlans: Record<number, SpecPlan>;
+    /** Passages cités en attente, envoyés avec le prochain message de l'onglet. */
+    quotes: Record<number, Quote[]>;
 
     apply(message: ServerMessage): void;
     setPulls(patch: Partial<PullsState>): void;
@@ -121,6 +130,9 @@ interface State {
     setPanel(runId: number, panel: Panel | null): void;
     setIssues(patch: Partial<IssuesState>): void;
     dismissMcp(runId: number): void;
+    addQuote(runId: number, quote: Omit<Quote, 'id'>): void;
+    removeQuote(runId: number, id: string): void;
+    clearQuotes(runId: number): void;
 }
 
 const emptyView = (): RunView => ({ messages: [], seen: new Set(), partial: '', partialTool: null, asks: [], commands: [], models: [], permissions: [], jobs: [], loaded: false });
@@ -150,6 +162,17 @@ export const useStore = create<State>((set, get) => ({
     batch: [],
     bruno: {},
     cleanupJobs: {},
+    specs: {},
+    specPlans: {},
+    quotes: {},
+    addQuote: (runId, quote) => set((state) => ({ quotes: { ...state.quotes, [runId]: [...(state.quotes[runId] ?? []), { ...quote, id: crypto.randomUUID() }] } })),
+    removeQuote: (runId, id) => set((state) => ({ quotes: { ...state.quotes, [runId]: (state.quotes[runId] ?? []).filter((q) => q.id !== id) } })),
+    clearQuotes: (runId) =>
+        set((state) => {
+            const quotes = { ...state.quotes };
+            delete quotes[runId];
+            return { quotes };
+        }),
     setPulls: (patch) => set((state) => ({ pulls: { ...state.pulls, ...patch } })),
     setReview: (review) => set((state) => ({ reviews: { ...state.reviews, [reviewKey(review.repoId, review.prNumber)]: review } })),
 
@@ -212,6 +235,12 @@ export const useStore = create<State>((set, get) => ({
                 break;
             case 'batch':
                 set({ batch: message.items });
+                break;
+            case 'spec':
+                set((s) => ({ specs: { ...s.specs, [message.spec.runId]: message.spec } }));
+                break;
+            case 'specPlan':
+                set((s) => ({ specPlans: { ...s.specPlans, [message.plan.runId]: message.plan } }));
                 break;
             case 'account':
                 set({ account: message.account });

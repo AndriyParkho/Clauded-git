@@ -6,6 +6,7 @@ import { jobs } from './jobs.js';
 import { progressEvents } from './progress.js';
 import { reviewWatcher } from './review.js';
 import { sessions } from './sessions/manager.js';
+import { specWatcher } from './spec.js';
 import type { ClientMessage, ServerMessage } from '../shared/protocol.js';
 
 const clients = new Set<WebSocket>();
@@ -33,6 +34,8 @@ export function wireSessionEvents(): void {
     reviewWatcher.on('review', (review) => broadcast({ type: 'review', review }));
     progressEvents.on('progress', (opId, steps) => broadcast({ type: 'progress', opId, steps }));
     batchEvents.on('batch', (items) => broadcast({ type: 'batch', items }));
+    specWatcher.on('spec', (spec) => broadcast({ type: 'spec', spec }));
+    specWatcher.on('plan', (plan) => broadcast({ type: 'specPlan', plan }));
     sessions.on('error', (runId, message) => broadcast(runId === undefined ? { type: 'error', message } : { type: 'error', runId, message }));
 }
 

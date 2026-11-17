@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { watch, type FSWatcher } from 'node:fs';
 import { mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { DATA_DIR } from './config.js';
@@ -8,6 +7,7 @@ import { exec } from './exec.js';
 import { repoSlug } from './github.js';
 import type { Profile } from './profiles.js';
 import { getPull, pullAsContext, pullDiff } from './pulls.js';
+import { watchDirectory, type Closable } from './watch.js';
 import { isCommentable, parseDiff } from '../shared/diff.js';
 import type { DraftLabel, PullDetail, Repo, ReviewEvent, ReviewState } from '../shared/protocol.js';
 
@@ -121,22 +121,25 @@ export async function importReviewFile(repo: Repo, prNumber: number): Promise<Re
 
 /** Surveille le dossier des reviews et importe chaque fichier dès qu'il est (ré)écrit. */
 export class ReviewWatcher extends EventEmitter<{ review: [ReviewState] }> {
-    private watcher: FSWatcher | undefined;
+    private watcher: Closable | undefined;
     private readonly timers = new Map<string, NodeJS.Timeout>();
 
     async start(): Promise<void> {
         await mkdir(REVIEWS_DIR, { recursive: true });
-        this.watcher = watch(REVIEWS_DIR, (_event, name) => {
-            if (!name?.endsWith('.json')) return;
-            clearTimeout(this.timers.get(name));
-            this.timers.set(
-                name,
-                setTimeout(() => {
-                    this.timers.delete(name);
-                    void this.importByName(name);
-                }, 300),
-            );
-        });
+        this.watcher = watchDirectory(
+            REVIEWS_DIR,
+            (name) => {
+                clearTimeout(this.timers.get(name));
+                this.timers.set(
+                    name,
+                    setTimeout(() => {
+                        this.timers.delete(name);
+                        void this.importByName(name);
+                    }, 300),
+                );
+            },
+            (name) => name.endsWith('.json'),
+        );
     }
 
     stop(): void {

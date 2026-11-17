@@ -110,7 +110,7 @@ function PrPanel({ run, info, onRefresh }: { run: Run; info: WorktreeInfo | unde
     );
 }
 
-const PANEL_TITLES: Record<Panel, string> = { issue: 'Issue', diff: 'Diff', jobs: 'Logs des commandes', pr: 'Branche et PR', review: 'Review', info: 'Description' };
+const PANEL_TITLES: Partial<Record<Panel, string>> = { issue: 'Issue', diff: 'Diff', jobs: 'Logs des commandes', pr: 'Branche et PR', review: 'Review', info: 'Description' };
 
 // Référence stable : `?? []` dans un sélecteur zustand recrée un tableau à chaque lecture et boucle.
 const NO_JOBS: JobInfo[] = [];

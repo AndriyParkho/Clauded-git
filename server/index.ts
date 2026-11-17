@@ -10,6 +10,7 @@ import { jobs } from './jobs.js';
 import { reviewWatcher } from './review.js';
 import { registerRoutes } from './routes.js';
 import { sessions } from './sessions/manager.js';
+import { specWatcher } from './spec.js';
 import { registerWebSocket, wireSessionEvents } from './ws.js';
 
 const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'warn' } });
@@ -35,6 +36,7 @@ if (existsSync(webDist)) {
 const shutdown = (): void => {
     sessions.closeAll();
     reviewWatcher.stop();
+    specWatcher.stop();
     jobs.stopAll();
     void app.close().finally(() => process.exit(0));
 };
@@ -44,5 +46,6 @@ process.on('SIGTERM', shutdown);
 await app.listen({ host: HOST, port: PORT });
 sessions.startAccountPolling();
 await reviewWatcher.start();
+await specWatcher.start();
 watchBatches();
 console.log(`Clauded GIT : http://${HOST}:${PORT}${existsSync(webDist) ? '' : '  (UI : lance aussi vite, ou npm run dev)'}`);

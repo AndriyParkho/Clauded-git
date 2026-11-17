@@ -38,6 +38,9 @@ export function Tabs(): ReactElement {
             <button className={`tab ${page === 'pulls' ? 'active' : ''}`} onClick={() => setPage('pulls')}>
                 PR
             </button>
+            <button className={`tab ${page === 'specs' ? 'active' : ''}`} onClick={() => setPage('specs')}>
+                Spec
+            </button>
             <button className={`tab ${page === 'repos' ? 'active' : ''}`} onClick={() => setPage('repos')}>
                 Dépôts
             </button>
