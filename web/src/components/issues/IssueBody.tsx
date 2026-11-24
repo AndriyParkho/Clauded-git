@@ -6,8 +6,14 @@ import { useStore } from '../../store';
 import { stateDot } from '../Tabs';
 import type { IssueDetailResponse, Run, SessionHistoryItem } from '../../../../shared/protocol';
 
+/** Couleur du label GitHub mêlée au texte clair : reste lisible même pour un label noir ou bleu nuit sur fond sombre. */
 export function labelStyle(color: string): React.CSSProperties {
-    return { borderColor: `#${color}`, color: `#${color}` };
+    const c = `#${color}`;
+    return {
+        borderColor: `color-mix(in srgb, ${c} 55%, transparent)`,
+        background: `color-mix(in srgb, ${c} 16%, transparent)`,
+        color: `color-mix(in srgb, ${c} 60%, var(--fg-strong))`,
+    };
 }
 
 export function timeAgo(iso: string | number): string {

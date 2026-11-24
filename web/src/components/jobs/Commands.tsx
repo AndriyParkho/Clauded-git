@@ -4,6 +4,8 @@ import { api, type Profile, type ProjectsInfo } from '../../api';
 import { useStore } from '../../store';
 import { send } from '../../ws';
 import { useResolveMerge } from '../MergeIntegration';
+import { Icon } from '../Icon';
+import { Menu, MenuLabel, MenuSeparator } from '../Menu';
 import type { JobInfo, Run } from '../../../../shared/protocol';
 
 // ---------------------------------------------------------------------------------------------
@@ -90,22 +92,11 @@ function ProjectSelect({ info, project, onChange, onReload }: { info: ProjectsIn
     );
 }
 
-/** Saisie d'une commande libre, avec les dernières commandes tapées dans ce dépôt. */
+/** Saisie d'une commande libre (dans le menu Commandes), avec les dernières commandes tapées dans ce dépôt. */
 function CustomCommand({ repoId, project, onRun }: { repoId: number | null; project: string; onRun: (command: string) => void }): ReactElement {
     const key = `clauded.recentCommands.${repoId ?? 0}`;
-    const [open, setOpen] = useState(false);
     const [text, setText] = useState('');
     const [recent, setRecent] = useState<string[]>(() => load<string[]>(key, []));
-    const box = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        if (!open) return;
-        const close = (e: MouseEvent): void => {
-            if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
-        };
-        document.addEventListener('mousedown', close);
-        return () => document.removeEventListener('mousedown', close);
-    }, [open]);
 
     const run = (command: string): void => {
         const clean = command.trim();
@@ -114,56 +105,61 @@ function CustomCommand({ repoId, project, onRun }: { repoId: number | null; proj
         setRecent(next);
         save(key, next);
         setText('');
-        setOpen(false);
         onRun(clean);
     };
 
     return (
-        <div className="menu custom-command" ref={box}>
-            <button onClick={() => setOpen(!open)} title="Lancer une commande de ton choix dans le projet choisi">
-                ▶ Commande…
-            </button>
-            {open && (
-                <div className="command-popover">
-                    <form
-                        onSubmit={(e) => {
-                            e.preventDefault();
-                            run(text);
-                        }}
-                    >
-                        <input className="mono" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="yarn test src/foo.test.ts" />
-                        <button className="primary small" type="submit" disabled={!text.trim()}>
-                            Lancer
-                        </button>
-                    </form>
-                    <div className="muted command-where">
-                        dans <span className="mono">{project === '.' ? 'la racine du worktree' : project}</span> (zsh -lc)
-                    </div>
-                    {recent.length > 0 && (
-                        <div className="command-recent">
-                            {recent.map((c) => (
-                                <div key={c} className="command-recent-row">
-                                    <button className="link mono" onClick={() => run(c)} title="Relancer">
-                                        {c}
-                                    </button>
-                                    <button className="link muted" onClick={() => setText(c)} title="Modifier avant de lancer">
-                                        ✎
-                                    </button>
-                                </div>
-                            ))}
+        <div className="custom-command">
+            <form
+                className="command-form"
+                onSubmit={(e) => {
+                    e.preventDefault();
+                    run(text);
+                }}
+            >
+                <input className="mono" value={text} onChange={(e) => setText(e.target.value)} placeholder="yarn test src/foo.test.ts" aria-label="Commande libre" />
+                <button className="primary small" type="submit" disabled={!text.trim()}>
+                    Lancer
+                </button>
+            </form>
+            <div className="muted command-where">
+                dans <span className="mono">{project === '.' ? 'la racine du worktree' : project}</span> (zsh -lc)
+            </div>
+            {recent.length > 0 && (
+                <div className="command-recent">
+                    {recent.map((c) => (
+                        <div key={c} className="command-recent-row">
+                            <button className="link mono" onClick={() => run(c)} title="Relancer">
+                                {c}
+                            </button>
+                            <button className="link muted" data-keep-open="1" onClick={() => setText(c)} title="Modifier avant de lancer" aria-label={`Modifier ${c}`}>
+                                ✎
+                            </button>
                         </div>
-                    )}
+                    ))}
                 </div>
             )}
         </div>
     );
 }
 
+/** Libellé de la vue « Logs » : nombre de commandes, pastille si l'une tourne ou si la dernière a échoué. */
+export function LogsLabel({ jobs }: { jobs: JobInfo[] }): ReactElement {
+    const running = jobs.some((j) => j.status === 'running');
+    const failed = jobs.length > 0 && jobs[jobs.length - 1]?.status === 'failed';
+    return (
+        <>
+            Logs{jobs.length ? ` ${jobs.length}` : ''}
+            {running ? <span className="dot dot-running inline-dot" /> : failed ? <span className="dot dot-error inline-dot" title="Dernière commande en échec" /> : null}
+        </>
+    );
+}
+
 /**
- * Boutons de commandes d'un onglet qui a un worktree : projet où se placer, commandes du profil
- * (Lint, Tests…), install, commande libre, et accès aux logs. Chaque lancement ouvre les logs.
+ * Menu « Commandes » d'un onglet qui a un worktree : projet où se placer, commandes du profil
+ * (Lint, Tests…), install et commande libre. Chaque lancement ouvre les logs.
  */
-export function CommandTools({ run, jobs, onShowJobs, jobsOpen }: { run: Run; jobs: JobInfo[]; onShowJobs: (open: boolean) => void; jobsOpen: boolean }): ReactElement {
+export function CommandsMenu({ run, jobs, onShowJobs }: { run: Run; jobs: JobInfo[]; onShowJobs: (open: boolean) => void }): ReactElement {
     const notify = useStore((s) => s.notify);
     const [profile, setProfile] = useState<Profile | undefined>();
     const { info, project, setProject, reload } = useProject(run);
@@ -185,30 +181,31 @@ export function CommandTools({ run, jobs, onShowJobs, jobsOpen }: { run: Run; jo
     };
 
     const where = project === '.' ? '' : ` (dans ${project})`;
-    const running = jobs.filter((j) => j.status === 'running').length;
-    const failed = jobs.length > 0 && jobs[jobs.length - 1]?.status === 'failed';
+    const running = jobs.some((j) => j.status === 'running');
 
     return (
-        <>
-            <span className="command-group">
+        <Menu label="Commandes" icon="terminal" title="Lint, tests, install ou commande libre dans le worktree" badge={running ? <span className="dot dot-running" title="Commande en cours" /> : undefined} className="commands-menu">
+            <MenuLabel>Projet</MenuLabel>
+            <div className="menu-row">
                 <ProjectSelect info={info} project={project} onChange={setProject} onReload={reload} />
-                {Object.entries(profile?.commands ?? {}).map(([name, command]) => (
-                    <button key={name} onClick={() => void launch(() => api.command(run.id, name, project))} title={`${command}${where}`}>
-                        {name}
-                    </button>
-                ))}
-                {profile?.install && (
-                    <button onClick={() => void launch(() => api.install(run.id))} title={`${profile.install} (à la racine du worktree)`}>
-                        Install
-                    </button>
-                )}
-                <CustomCommand repoId={run.repoId} project={project} onRun={(command) => void launch(() => api.exec(run.id, command, project))} />
-            </span>
-            <button className={`${jobsOpen ? 'active' : ''} ${failed ? 'has-error' : ''}`} onClick={() => onShowJobs(!jobsOpen)} title="Logs des commandes lancées dans cet onglet">
-                Logs{jobs.length ? ` (${jobs.length})` : ''}
-                {running > 0 && <span className="dot dot-running inline-dot" />}
-            </button>
-        </>
+            </div>
+            <MenuLabel>Lancer</MenuLabel>
+            {Object.entries(profile?.commands ?? {}).map(([name, command]) => (
+                <button key={name} role="menuitem" onClick={() => void launch(() => api.command(run.id, name, project))} title={`${command}${where}`}>
+                    <Icon name="play" size={12} /> {name}
+                    <span className="menu-hint mono">{command}</span>
+                </button>
+            ))}
+            {profile?.install && (
+                <button role="menuitem" onClick={() => void launch(() => api.install(run.id))} title={`${profile.install} (à la racine du worktree)`}>
+                    <Icon name="play" size={12} /> Install
+                    <span className="menu-hint mono">{profile.install}</span>
+                </button>
+            )}
+            <MenuSeparator />
+            <MenuLabel>Commande libre</MenuLabel>
+            <CustomCommand repoId={run.repoId} project={project} onRun={(command) => void launch(() => api.exec(run.id, command, project))} />
+        </Menu>
     );
 }
 

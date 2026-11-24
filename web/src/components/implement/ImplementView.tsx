@@ -5,11 +5,13 @@ import { useStore, type Panel } from '../../store';
 import { ChatView } from '../chat/ChatView';
 import { IssueBody } from '../issues/IssueBody';
 import { DiffBrowser, DiffSummary } from '../DiffView';
-import { CommandTools, JobsPanel } from '../jobs/Commands';
-import { MergeBaseButton, MergeIntegrationButton } from '../MergeIntegration';
+import { CommandsMenu, JobsPanel, LogsLabel } from '../jobs/Commands';
+import { GitMenu } from '../MergeIntegration';
+import { ViewSwitch } from '../ViewSwitch';
 import { parseDiff } from '../../../../shared/diff';
 import { BrunoButton } from '../BrunoButton';
 import { OpenMenu } from '../OpenMenu';
+import { Icon } from '../Icon';
 import { PullInfo } from '../pulls/PullInfo';
 import type { JobInfo, PullDetail, Run, WorktreeInfo } from '../../../../shared/protocol';
 
@@ -149,35 +151,42 @@ export function ImplementView({ run }: { run: Run }): ReactElement {
     const running = jobs.some((j) => j.status === 'running');
     const base = run.baseBranch ?? profile?.baseBranch ?? 'master';
 
-    const toolbar = (
+    const views = (
+        <ViewSwitch<Panel>
+            value={panel}
+            onChange={toggle}
+            options={[
+                ...(run.issueNumber !== null ? [{ value: 'issue' as const, label: `Issue #${run.issueNumber}`, title: "Afficher l'issue" }] : []),
+                { value: 'diff', label: 'Diff', title: `Changements par rapport à origin/${base}` },
+                { value: 'jobs', label: <LogsLabel jobs={jobs} />, title: 'Logs des commandes lancées dans cet onglet' },
+                { value: 'pr', label: info?.pr ? `PR #${info.pr.number}` : 'PR', title: 'État de la branche et de sa PR' },
+            ]}
+        />
+    );
+
+    const actions = (
         <>
-            <OpenMenu path={run.cwd} runId={run.id} />
-            {repo && <BrunoButton repoId={repo.id} path={run.worktree ?? run.cwd} />}
-            <button className={panel === 'issue' ? 'active' : ''} onClick={() => toggle('issue')}>
-                Issue
-            </button>
-            <button className={panel === 'diff' ? 'active' : ''} onClick={() => toggle('diff')}>
-                Diff
-            </button>
+            <CommandsMenu run={run} jobs={jobs} onShowJobs={(open) => setPanel(run.id, open ? 'jobs' : null)} />
             {repo && run.type !== 'merge' && (
-                <>
-                    <MergeBaseButton repoId={repo.id} base={base} what={run.branch ?? 'la branche'} start={() => api.mergeBase(run.id)} disabled={running} />
-                    <MergeIntegrationButton repoId={repo.id} what={run.branch ?? 'la branche'} start={() => api.mergeIntegration(run.id)} disabled={running} />
-                </>
+                <GitMenu repoId={repo.id} base={base} what={run.branch ?? 'la branche'} mergeBase={() => api.mergeBase(run.id)} mergeIntegration={() => api.mergeIntegration(run.id)} disabled={running} runId={run.id} />
             )}
-            <CommandTools run={run} jobs={jobs} jobsOpen={panel === 'jobs'} onShowJobs={(open) => setPanel(run.id, open ? 'jobs' : null)} />
-            <button className={panel === 'pr' ? 'active' : ''} onClick={() => toggle('pr')}>
-                {info?.pr ? `PR #${info.pr.number}` : 'PR'}
-            </button>
+            <OpenMenu path={run.cwd} runId={run.id}>
+                {repo && <BrunoButton repoId={repo.id} path={run.worktree ?? run.cwd} />}
+            </OpenMenu>
         </>
     );
 
     const subtitle = (
-        <span className="muted mono">
-            {run.branch && `${run.branch} ← ${base}`}
-            {info && (info.dirty ? ` · ${info.changedFiles} modif.` : ' · propre')}
-            {info?.hasUpstream && ` · ↑${info.ahead} ↓${info.behind}`}
-            {run.installStatus && run.installStatus !== 'ok' && <span className={run.installStatus === 'failed' ? 'error' : 'warn'}> · install {run.installStatus === 'running' ? 'en cours' : run.installStatus === 'failed' ? 'en échec' : run.installStatus}</span>}
+        <span className="branch-line">
+            {run.branch && (
+                <span className="branch-name mono" title={`${run.branch} ← ${base}`}>
+                    {run.branch}
+                </span>
+            )}
+            {info && (info.dirty ? <span className="warn">{info.changedFiles} modif.</span> : <span className="ok-text">propre</span>)}
+            {info?.hasUpstream && (info.ahead > 0 || info.behind > 0) && <span className="mono">↑{info.ahead} ↓{info.behind}</span>}
+            {info && !info.hasUpstream && <span>pas poussée</span>}
+            {run.installStatus && run.installStatus !== 'ok' && <span className={run.installStatus === 'failed' ? 'error' : 'warn'}>install {run.installStatus === 'running' ? 'en cours' : run.installStatus === 'failed' ? 'en échec' : run.installStatus}</span>}
         </span>
     );
 
@@ -195,7 +204,8 @@ export function ImplementView({ run }: { run: Run }): ReactElement {
     return (
         <ChatView
             run={run}
-            toolbar={toolbar}
+            views={views}
+            actions={actions}
             subtitle={subtitle}
             wide={panel === 'diff'}
             panel={
@@ -203,8 +213,8 @@ export function ImplementView({ run }: { run: Run }): ReactElement {
                     <>
                         <div className="panel-head">
                             <span>{PANEL_TITLES[panel]}</span>
-                            <button className="small" onClick={() => setPanel(run.id, null)}>
-                                ×
+                            <button className="icon-button" onClick={() => setPanel(run.id, null)} title="Fermer le panneau" aria-label="Fermer le panneau">
+                                <Icon name="x" size={14} />
                             </button>
                         </div>
                         <div className="panel-body">{content}</div>

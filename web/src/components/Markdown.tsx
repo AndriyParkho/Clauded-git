@@ -13,7 +13,27 @@ const rendered = new Map<string, { svg: string } | { error: string }>();
 /** Mermaid est lourd : chargé au premier diagramme seulement. */
 function loadMermaid(): Promise<MermaidApi> {
     mermaidLoad ??= import('mermaid').then(({ default: mermaid }) => {
-        mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict', fontFamily: 'inherit' });
+        // Couleurs alignées sur le design system (styles.css, :root).
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'base',
+            securityLevel: 'strict',
+            fontFamily: 'inherit',
+            themeVariables: {
+                darkMode: true,
+                background: '#0F172A',
+                primaryColor: '#1B2336',
+                primaryTextColor: '#E2E8F0',
+                primaryBorderColor: '#60A5FA',
+                secondaryColor: '#1E293B',
+                tertiaryColor: '#131B2E',
+                lineColor: '#94A3B8',
+                textColor: '#E2E8F0',
+                noteBkgColor: '#1A2A47',
+                noteTextColor: '#E2E8F0',
+                noteBorderColor: '#3A475D',
+            },
+        });
         return mermaid;
     });
     return mermaidLoad;

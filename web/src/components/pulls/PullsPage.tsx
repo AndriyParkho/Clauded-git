@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../api';
+import { ResizablePane } from '../ResizeHandle';
 import { useStore } from '../../store';
 import { BrunoButton } from '../BrunoButton';
 import { MergeBaseButton, MergeIntegrationButton } from '../MergeIntegration';
@@ -89,7 +90,7 @@ function PullDetailPane({ repoId, number }: { repoId: number; number: number }):
                     </button>
                     {detail.worktree ? (
                         <>
-                            <OpenMenu path={detail.worktree.path} label="Ouvrir le worktree ▾" />
+                            <OpenMenu path={detail.worktree.path} label="Ouvrir le worktree" />
                             <BrunoButton repoId={repoId} path={detail.worktree.path} />
                         </>
                     ) : (
@@ -207,7 +208,7 @@ export function PullsPage(): ReactElement {
                     {total === 0 && !pulls.loading && <div className="muted pad">{pulls.filter === 'review' ? 'Aucune review demandée.' : 'Rien à afficher.'}</div>}
                 </div>
                 {selected && (
-                    <div className="issues-detail">
+                    <ResizablePane sizeKey="pulls-detail" className="issues-detail">
                         <div className="issues-detail-bar">
                             <span className="muted mono">{repoById.get(selected.repoId)?.name ?? ''}</span>
                             <span className="spacer" />
@@ -216,7 +217,7 @@ export function PullsPage(): ReactElement {
                             </button>
                         </div>
                         <PullDetailPane repoId={selected.repoId} number={selected.number} />
-                    </div>
+                    </ResizablePane>
                 )}
             </div>
         </div>

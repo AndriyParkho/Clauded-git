@@ -1,7 +1,7 @@
-import type { ReactElement } from 'react';
-import { useState } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { api } from '../api';
 import { useStore } from '../store';
+import { Menu, MenuLabel, MenuSeparator } from './Menu';
 import type { OpenApp } from '../../../shared/protocol';
 
 const APPS: Array<{ value: OpenApp; label: string }> = [
@@ -11,12 +11,13 @@ const APPS: Array<{ value: OpenApp; label: string }> = [
     { value: 'iterm', label: 'iTerm' },
 ];
 
-/** « Ouvrir ▾ » : un dossier (dépôt ou worktree) dans VS Code, le Finder, Terminal ou iTerm. */
-export function OpenMenu({ path, label = 'Ouvrir ▾', runId, small }: { path: string; label?: string; runId?: number; small?: boolean }): ReactElement {
+/**
+ * « Ouvrir ▾ » : un dossier (dépôt ou worktree) dans VS Code, le Finder, Terminal ou iTerm.
+ * `children` : actions en plus sous un séparateur (Bruno).
+ */
+export function OpenMenu({ path, label = 'Ouvrir', runId, small, children }: { path: string; label?: string; runId?: number; small?: boolean; children?: ReactNode }): ReactElement {
     const notify = useStore((s) => s.notify);
-    const [open, setOpen] = useState(false);
     const openIn = async (app: OpenApp): Promise<void> => {
-        setOpen(false);
         try {
             await api.openIn(path, app);
         } catch (error) {
@@ -24,19 +25,19 @@ export function OpenMenu({ path, label = 'Ouvrir ▾', runId, small }: { path: s
         }
     };
     return (
-        <span className="menu">
-            <button className={small ? 'small' : ''} onClick={() => setOpen(!open)} title={path}>
-                {label}
-            </button>
-            {open && (
-                <div className="menu-items" onMouseLeave={() => setOpen(false)}>
-                    {APPS.map((app) => (
-                        <button key={app.value} onClick={() => void openIn(app.value)}>
-                            {app.label}
-                        </button>
-                    ))}
-                </div>
+        <Menu label={label} icon="external" title={path} small={small ?? false} keepMounted={children !== undefined}>
+            <MenuLabel>{path.replace(/^\/Users\/[^/]+/, '~')}</MenuLabel>
+            {APPS.map((app) => (
+                <button key={app.value} role="menuitem" onClick={() => void openIn(app.value)}>
+                    {app.label}
+                </button>
+            ))}
+            {children && (
+                <>
+                    <MenuSeparator />
+                    {children}
+                </>
             )}
-        </span>
+        </Menu>
     );
 }

@@ -340,7 +340,7 @@ export function BatchDialog({ repoId, numbers, onAdd, onOpenParent, onClose }: P
 
                     {analysis.warnings.map((w) => (
                         <div key={w} className="muted batch-warning">
-                            ⚠ {w}
+                            {'⚠\uFE0E'} {w}
                         </div>
                     ))}
                     {cycle && <div className="error batch-warning">{cycle} : retire une des dépendances.</div>}

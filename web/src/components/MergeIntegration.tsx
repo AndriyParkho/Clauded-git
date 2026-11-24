@@ -2,6 +2,7 @@ import type { ReactElement } from 'react';
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useStore } from '../store';
+import { Menu, MenuLabel } from './Menu';
 import { Modal } from './Modal';
 import type { JobInfo } from '../../../shared/protocol';
 
@@ -143,6 +144,40 @@ export function MergeIntegrationButton({ repoId, start, what, disabled }: Props)
             start={start}
             disabled={disabled}
         />
+    );
+}
+
+interface GitMenuProps {
+    repoId: number;
+    base?: string | null | undefined;
+    what: string;
+    mergeBase: () => Promise<JobInfo>;
+    mergeIntegration: () => Promise<JobInfo>;
+    disabled?: boolean;
+    /** Onglet dont on montre l'état du dernier merge sur le bouton du menu. */
+    runId?: number;
+    small?: boolean;
+}
+
+/**
+ * « Git ▾ » : merge de la base dans la branche, et de la branche dans develop. Le contenu reste monté
+ * pour garder l'état des merges (résultat, sortie, résolution des conflits) ; le bouton porte une
+ * pastille pendant un merge et après un échec.
+ */
+export function GitMenu({ repoId, base, what, mergeBase, mergeIntegration, disabled, runId, small }: GitMenuProps): ReactElement {
+    const last = useStore((s) => {
+        if (runId === undefined) return undefined;
+        let found: JobInfo | undefined;
+        for (const job of Object.values(s.jobs)) if (job.runId === runId && job.name.startsWith('Merge') && (!found || job.startedAt > found.startedAt)) found = job;
+        return found?.status;
+    });
+    const badge = last === 'running' ? <span className="dot dot-running" title="Merge en cours" /> : last === 'failed' ? <span className="dot dot-error" title="Dernier merge en échec" /> : undefined;
+    return (
+        <Menu label="Git" icon="merge" title={`Merges de ${what}`} keepMounted closeOnClick={false} badge={badge} small={small ?? false}>
+            <MenuLabel>Merger</MenuLabel>
+            <MergeBaseButton repoId={repoId} base={base} what={what} start={mergeBase} disabled={disabled ?? false} />
+            <MergeIntegrationButton repoId={repoId} what={what} start={mergeIntegration} disabled={disabled ?? false} />
+        </Menu>
     );
 }
 

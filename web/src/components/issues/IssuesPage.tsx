@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../../api';
+import { ResizablePane } from '../ResizeHandle';
 import { useStore } from '../../store';
 import { MergeBaseButton, MergeIntegrationButton } from '../MergeIntegration';
 import { OpenMenu } from '../OpenMenu';
@@ -57,7 +58,7 @@ function IssueRow({ issue, run, waiting, selected, checked, onCheck, onClick }: 
                 <span className="issue-row-title">
                     {waiting && (
                         <span className={`batch-tag ${waiting.state}`} title={waiting.detail}>
-                            {waiting.state === 'waiting' ? `⏳ ${waiting.detail}` : '✗ lancement en échec'}
+                            {waiting.state === 'waiting' ? `◷ ${waiting.detail}` : '✗ lancement en échec'}
                         </span>
                     )}
                     {issue.title}
@@ -97,7 +98,7 @@ function WaitingBlock({ item, busy, onStart }: { item: BatchItem | undefined; bu
     const waiting = item.state === 'waiting';
     return (
         <div className={`batch-waiting ${item.state}`}>
-            <span>{waiting ? `⏳ Lot : ${item.detail}` : `✗ Lancement en échec : ${item.detail}`}</span>
+            <span>{waiting ? `◷ Lot : ${item.detail}` : `✗ Lancement en échec : ${item.detail}`}</span>
             <button className="small" disabled={busy} onClick={onStart} title="Lancer sans attendre (empilée sur les dépendances qui ont déjà une PR)">
                 {waiting ? 'Lancer maintenant' : 'Relancer'}
             </button>
@@ -337,7 +338,7 @@ export function IssuesPage(): ReactElement {
                     {issues.byRepo.length === 0 && !issues.loading && <div className="muted pad">Rien à afficher.</div>}
                 </div>
                 {selected && (
-                    <div className="issues-detail">
+                    <ResizablePane sizeKey="issues-detail" className="issues-detail">
                         <div className="issues-detail-bar">
                             <span className="muted mono">{repoById.get(selected.repoId)?.name ?? ''}</span>
                             <span className="spacer" />
@@ -361,7 +362,7 @@ export function IssuesPage(): ReactElement {
                                     <label className="muted check">
                                         <input type="checkbox" checked={planMode} onChange={(e) => setPlanMode(e.target.checked)} /> plan d'abord
                                     </label>
-                                    {worktree && <OpenMenu path={worktree.path} label="Ouvrir le worktree ▾" />}
+                                    {worktree && <OpenMenu path={worktree.path} label="Ouvrir le worktree" />}
                                     {worktree && <BrunoButton repoId={selected.repoId} path={worktree.path} />}
                                     {(worktree?.branch || issue.linkedBranches.length > 0 || issue.pullRequests.some((pr) => pr.state === 'OPEN') || implementRun(selected.repoId, issue.number)) && (
                                         <>
@@ -385,7 +386,7 @@ export function IssuesPage(): ReactElement {
                                 </>
                             )}
                         />
-                    </div>
+                    </ResizablePane>
                 )}
             </div>
             {existing && (

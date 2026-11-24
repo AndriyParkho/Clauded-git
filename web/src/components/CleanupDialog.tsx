@@ -120,7 +120,7 @@ function CleanupDialog({ repo, onClose }: { repo: Repo; onClose: () => void }): 
                                     ))}
                                     {item.warnings.map((w) => (
                                         <span key={w} className="cleanup-warning">
-                                            ⚠ {w}
+                                            {'⚠\uFE0E'} {w}
                                         </span>
                                     ))}
                                 </div>

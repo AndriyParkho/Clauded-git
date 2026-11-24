@@ -6,6 +6,8 @@ import { ChatView } from '../chat/ChatView';
 import { QuoteSelection } from '../chat/QuoteSelection';
 import { Markdown } from '../Markdown';
 import { OpenMenu } from '../OpenMenu';
+import { Icon } from '../Icon';
+import { ViewSwitch } from '../ViewSwitch';
 import { SpecPlanPanel } from './SpecPlanPanel';
 import { chunkDiff, diffLines } from '../../../../shared/linediff';
 import type { Run, SpecFile } from '../../../../shared/protocol';
@@ -148,16 +150,14 @@ export function SpecView({ run }: { run: Run }): ReactElement {
     const toggle = (next: Panel): void => setPanel(run.id, panel === next ? null : next);
     const lastWrite = spec?.versions.at(-1)?.at;
 
-    const toolbar = (
-        <>
-            <OpenMenu path={run.cwd} runId={run.id} />
-            {(['spec', 'versions', 'plan'] as const).map((p) => (
-                <button key={p} className={panel === p ? 'active' : ''} onClick={() => toggle(p)}>
-                    {p === 'versions' && spec ? `Versions (${spec.versions.length})` : TITLES[p]}
-                </button>
-            ))}
-        </>
+    const views = (
+        <ViewSwitch<Panel>
+            value={panel}
+            onChange={toggle}
+            options={(['spec', 'versions', 'plan'] as const).map((p) => ({ value: p, label: p === 'versions' && spec ? `Versions ${spec.versions.length}` : (TITLES[p] ?? p) }))}
+        />
     );
+    const actions = <OpenMenu path={run.cwd} runId={run.id} />;
 
     const subtitle = spec && (
         <span className="muted mono">
@@ -171,7 +171,8 @@ export function SpecView({ run }: { run: Run }): ReactElement {
     return (
         <ChatView
             run={run}
-            toolbar={toolbar}
+            views={views}
+            actions={actions}
             subtitle={subtitle}
             wide={panel === 'versions' || panel === 'plan'}
             panel={
@@ -183,8 +184,8 @@ export function SpecView({ run }: { run: Run }): ReactElement {
                                 {TITLES[panel]}
                                 {panel === 'spec' && <span className="muted spec-hint"> · sélectionne un passage pour le commenter</span>}
                             </span>
-                            <button className="small" onClick={() => setPanel(run.id, null)}>
-                                ×
+                            <button className="icon-button" onClick={() => setPanel(run.id, null)} title="Fermer le panneau" aria-label="Fermer le panneau">
+                                <Icon name="x" size={14} />
                             </button>
                         </div>
                         <div className="panel-body">{content}</div>

@@ -4,10 +4,12 @@ import { api } from '../../api';
 import { reviewKey, useStore, type Panel } from '../../store';
 import { ChatView } from '../chat/ChatView';
 import { IssueBody } from '../issues/IssueBody';
-import { CommandTools, JobsPanel } from '../jobs/Commands';
-import { MergeBaseButton, MergeIntegrationButton } from '../MergeIntegration';
+import { CommandsMenu, JobsPanel, LogsLabel } from '../jobs/Commands';
+import { GitMenu } from '../MergeIntegration';
 import { BrunoButton } from '../BrunoButton';
+import { Icon } from '../Icon';
 import { OpenMenu } from '../OpenMenu';
+import { ViewSwitch } from '../ViewSwitch';
 import { PullInfo } from './PullInfo';
 import { ReviewPanel } from './ReviewPanel';
 import { ReviewSkillSelect } from './ReviewSkillSelect';
@@ -86,37 +88,43 @@ export function PrView({ run }: { run: Run }): ReactElement {
     const toggle = (next: Panel): void => setPanel(run.id, panel === next ? null : next);
     const busy = starting || run.state === 'running';
 
-    const toolbar = (
+    // Les issues liées partagent la valeur « issue » : on distingue l'active par son numéro.
+    const views = (
+        <ViewSwitch<Panel>
+            value={panel ?? null}
+            onChange={(next) => toggle(next)}
+            options={[
+                { value: 'review', label: `Brouillons${drafts ? ` ${drafts}` : ''}`, title: 'Brouillons de review sur le diff' },
+                { value: 'info', label: 'Description', title: 'Description, checks et commentaires de la PR' },
+                ...linked.map((issue) => ({
+                    value: 'issue' as const,
+                    key: `issue-${issue.number}`,
+                    label: `#${issue.number}`,
+                    title: `Issue liée : ${issue.title}`,
+                    active: panel === 'issue' && shownIssue === issue.number,
+                    // Affiche cette issue ; ne ferme le panneau que si c'est déjà elle.
+                    onSelect: () => (panel === 'issue' && shownIssue === issue.number ? setPanel(run.id, null) : openIssue(issue.number)),
+                })),
+                { value: 'jobs', label: <LogsLabel jobs={jobs} />, title: 'Logs des commandes lancées dans cet onglet' },
+            ]}
+        />
+    );
+
+    const actions = (
         <>
-            <OpenMenu path={run.cwd} runId={run.id} label="Ouvrir le worktree ▾" />
-            {repo && <BrunoButton repoId={repo.id} path={run.worktree ?? run.cwd} />}
-            <button className="primary" disabled={busy} onClick={() => void review()} title="Relit la PR et écrit les brouillons ; rien n'est publié">
-                {starting ? 'Lancement…' : 'Lancer la review'}
-            </button>
-            {repo && <ReviewSkillSelect repoId={repo.id} extra={sessionSkills} />}
-            <button className={panel === 'review' ? 'active' : ''} onClick={() => toggle('review')}>
-                Brouillons{drafts ? ` (${drafts})` : ''}
-            </button>
-            <button className={panel === 'info' ? 'active' : ''} onClick={() => toggle('info')}>
-                Description
-            </button>
-            {linked.map((issue) => (
-                <button
-                    key={issue.number}
-                    className={panel === 'issue' && shownIssue === issue.number ? 'active' : ''}
-                    onClick={() => (panel === 'issue' && shownIssue === issue.number ? setPanel(run.id, null) : openIssue(issue.number))}
-                    title={issue.title}
-                >
-                    Issue #{issue.number}
-                </button>
-            ))}
-            <CommandTools run={run} jobs={jobs} jobsOpen={panel === 'jobs'} onShowJobs={(open) => setPanel(run.id, open ? 'jobs' : null)} />
+            <CommandsMenu run={run} jobs={jobs} onShowJobs={(open) => setPanel(run.id, open ? 'jobs' : null)} />
             {repo && pull && !pull.isCrossRepository && pull.state === 'OPEN' && (
-                <>
-                    <MergeBaseButton repoId={repo.id} base={pull.baseRefName} what={pull.headRefName} start={() => api.mergeBase(run.id)} />
-                    <MergeIntegrationButton repoId={repo.id} what={pull.headRefName} start={() => api.mergeIntegration(run.id)} />
-                </>
+                <GitMenu repoId={repo.id} base={pull.baseRefName} what={pull.headRefName} mergeBase={() => api.mergeBase(run.id)} mergeIntegration={() => api.mergeIntegration(run.id)} runId={run.id} />
             )}
+            <OpenMenu path={run.cwd} runId={run.id}>
+                {repo && <BrunoButton repoId={repo.id} path={run.worktree ?? run.cwd} />}
+            </OpenMenu>
+            <span className="split-action">
+                <button className="primary" disabled={busy} onClick={() => void review()} title="Relit la PR et écrit les brouillons ; rien n'est publié">
+                    {starting ? 'Lancement…' : 'Lancer la review'}
+                </button>
+                {repo && <ReviewSkillSelect repoId={repo.id} extra={sessionSkills} />}
+            </span>
         </>
     );
 
@@ -137,7 +145,8 @@ export function PrView({ run }: { run: Run }): ReactElement {
     return (
         <ChatView
             run={run}
-            toolbar={toolbar}
+            views={views}
+            actions={actions}
             subtitle={subtitle}
             wide={panel === 'review'}
             panel={
@@ -145,8 +154,8 @@ export function PrView({ run }: { run: Run }): ReactElement {
                     <>
                         <div className="panel-head">
                             <span>{panelTitle}</span>
-                            <button className="small" onClick={() => setPanel(run.id, null)}>
-                                ×
+                            <button className="icon-button" onClick={() => setPanel(run.id, null)} title="Fermer le panneau" aria-label="Fermer le panneau">
+                                <Icon name="x" size={14} />
                             </button>
                         </div>
                         <div className="panel-body">{content}</div>

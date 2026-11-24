@@ -116,7 +116,9 @@ export function QuoteSelection({ runId, source, placeholder = 'Répondre à Clau
         window.getSelection()?.removeAllRanges();
         close();
         // On continue dans la saisie du chat : la citation part avec le message qu'on y écrit.
-        setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 0);
+        // Celle du même onglet : avec plusieurs volets ouverts, il y a une saisie par volet.
+        const chat = container.current?.closest('.chat') ?? document;
+        setTimeout(() => chat.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 0);
     };
 
     return (

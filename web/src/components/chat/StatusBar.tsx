@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 import { useState } from 'react';
 import { stateDot } from '../Tabs';
+import { Menu } from '../Menu';
 import { send } from '../../ws';
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import type { ModelChoice, Run, UsageInfo } from '../../../../shared/protocol';
@@ -35,8 +36,8 @@ function CopyResume({ command }: { command: string }): ReactElement {
         setTimeout(() => setState('idle'), 2000);
     };
     return (
-        <button className="small" onClick={() => void copy()} title={`Reprendre cette session dans un terminal (fermer l'onglet avant).\nCopie : ${command}`}>
-            {state === 'copied' ? 'commande copiée ✓' : state === 'failed' ? 'copie impossible' : '⧉ claude --resume'}
+        <button role="menuitem" data-keep-open="1" onClick={() => void copy()} title={`Reprendre cette session dans un terminal (fermer l'onglet avant).\nCopie : ${command}`}>
+            {state === 'copied' ? 'Commande copiée ✓' : state === 'failed' ? 'Copie impossible' : 'Copier « claude --resume »'}
         </button>
     );
 }
@@ -75,7 +76,7 @@ export function StatusBar({ run, models, permissions, usage }: Props): ReactElem
                     </option>
                 ))}
             </select>
-            <span className="muted" title="Commandes et outils acceptés automatiquement dans cette session">
+            <span className="muted status-perms" title="Commandes et outils acceptés automatiquement dans cette session">
                 {permissions} permissions
             </span>
             <span className="spacer" />
@@ -87,15 +88,17 @@ export function StatusBar({ run, models, permissions, usage }: Props): ReactElem
             <span className="muted" title="Coût de la session">
                 {run.costUsd.toFixed(2)} $
             </span>
-            <button className="small" disabled={run.state === 'closed'} onClick={() => send({ type: 'mcp', runId: run.id, action: 'status' })} title="État des serveurs MCP de la session (comme /mcp)">
-                MCP
-            </button>
-            {resumeCommand && <CopyResume command={resumeCommand} />}
             {run.lastError && (
                 <span className="error" title={run.lastError}>
                     erreur
                 </span>
             )}
+            <Menu icon="more" title="Plus d'actions sur la session" align="right" className="statusbar-more" small>
+                <button role="menuitem" disabled={run.state === 'closed'} onClick={() => send({ type: 'mcp', runId: run.id, action: 'status' })} title="État des serveurs MCP de la session (comme /mcp)">
+                    Serveurs MCP…
+                </button>
+                {resumeCommand && <CopyResume command={resumeCommand} />}
+            </Menu>
         </div>
     );
 }

@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DiffFile, DiffLine } from '../../../shared/diff';
 import type { DraftSide, ReviewDraft } from '../../../shared/protocol';
+import { ResizeHandle, useSize } from './ResizeHandle';
 
 /** Au-delà, un fichier est replié par défaut (sauf s'il porte des brouillons). */
 const LARGE_FILE_LINES = 400;
@@ -270,6 +271,8 @@ export function DiffBrowser({ files, review, before }: { files: DiffFile[]; revi
     const [active, setActive] = useState<string | null>(null);
     const [reveal, setReveal] = useState<{ path: string; n: number } | null>(null);
     const scroller = useRef<HTMLDivElement>(null);
+    const treeBox = useRef<HTMLElement>(null);
+    const treeWidth = useSize('diff-tree');
 
     const shown = useMemo(() => {
         const q = filter.trim().toLowerCase();
@@ -331,7 +334,8 @@ export function DiffBrowser({ files, review, before }: { files: DiffFile[]; revi
     return (
         <div className="diff-browser">
             {treeOpen ? (
-                <nav className="diff-tree">
+                <nav ref={treeBox} className="diff-tree" style={treeWidth === undefined ? undefined : { width: treeWidth }}>
+                    <ResizeHandle sizeKey="diff-tree" current={() => treeBox.current?.offsetWidth ?? 232} min={160} max={520} direction={1} label="Largeur de la liste des fichiers" className="edge-right" />
                     <div className="diff-tree-head">
                         <span>
                             Fichiers <span className="muted">{shown.length === files.length ? files.length : `${shown.length}/${files.length}`}</span>
