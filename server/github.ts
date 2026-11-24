@@ -215,3 +215,38 @@ export function issueAsContext(repo: Repo, issue: IssueDetail): string {
     lines.push('</issue>');
     return lines.join('\n');
 }
+
+/** Identifiants GraphQL (node id) des issues, pour les mutations. */
+export async function issueNodeIds(repo: Repo, numbers: number[]): Promise<Map<number, string>> {
+    if (numbers.length === 0) return new Map();
+    const fields = numbers.map((n) => `i${n}: issue(number: ${n}) { id }`).join('\n');
+    const data = await graphql<{ repository: Record<string, { id: string } | null> }>(`query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`, {
+        owner: repo.owner ?? '',
+        name: repo.name ?? '',
+    });
+    const ids = new Map<number, string>();
+    for (const n of numbers) {
+        const id = data.repository[`i${n}`]?.id;
+        if (id) ids.set(n, id);
+    }
+    return ids;
+}
+
+/**
+ * Écrit sur GitHub des relations « bloquée par » (`issue` attend `dependsOn`). Une relation qui
+ * existe déjà n'est pas une erreur ; les autres refus sont rendus comme avertissements.
+ */
+export async function addBlockedByLinks(repo: Repo, links: Array<{ issue: number; dependsOn: number }>): Promise<string[]> {
+    if (links.length === 0) return [];
+    const ids = await issueNodeIds(repo, [...new Set(links.flatMap((l) => [l.issue, l.dependsOn]))]);
+    const warnings: string[] = [];
+    for (const link of links) {
+        const issue = ids.get(link.issue);
+        const blocking = ids.get(link.dependsOn);
+        if (!issue || !blocking) continue;
+        await graphql(`mutation($issue: ID!, $blocking: ID!) { addBlockedBy(input: { issueId: $issue, blockingIssueId: $blocking }) { issue { number } } }`, { issue, blocking }).catch((error: unknown) => {
+            if (!/already|duplicate/i.test(String(error))) warnings.push(`#${link.issue} bloquée par #${link.dependsOn} non écrite sur GitHub : ${String(error)}`);
+        });
+    }
+    return warnings;
+}

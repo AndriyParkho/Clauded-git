@@ -10,6 +10,7 @@ import {
     type SessionMessage,
     type SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
+import { artifactInstructions } from '../artifacts.js';
 import { getRun, updateRun } from '../db.js';
 import { probeUsage, readUsage } from './account.js';
 import { PromptQueue, sessionOptions } from './options.js';
@@ -148,6 +149,7 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
                 model: run.model ?? undefined,
                 includePartialMessages: true,
                 canUseTool: (tool, input) => this.decidePermission(live, tool, input),
+                appendSystemPrompt: artifactInstructions(run.id),
             }),
         });
         this.live.set(runId, live);
@@ -350,6 +352,11 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
             for await (const message of live.q) {
                 this.remember(live, message);
                 this.emit('sdk', runId, message);
+                // Un tour peut démarrer sans prompt de notre part : Claude reprend la main quand un
+                // sous-agent (ou une commande) lancé en arrière-plan termine.
+                if ((message.type === 'assistant' || message.type === 'stream_event') && message.parent_tool_use_id === null && live.run.state === 'idle') {
+                    this.patch(live, { state: 'running' });
+                }
                 if (message.type === 'system' && message.subtype === 'init') {
                     this.patch(live, { sessionId: message.session_id, model: message.model, permissionMode: message.permissionMode });
                 } else if (message.type === 'system' && message.subtype === 'status' && message.permissionMode) {

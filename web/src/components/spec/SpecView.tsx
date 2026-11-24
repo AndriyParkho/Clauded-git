@@ -36,7 +36,7 @@ function SpecDoc({ run, spec }: { run: Run; spec: SpecFile | undefined }): React
         );
     }
     return (
-        <QuoteSelection runId={run.id} source={baseName(spec.path)} comment className="spec-doc">
+        <QuoteSelection runId={run.id} source={baseName(spec.path)} placeholder="Ton commentaire sur ce passage" className="spec-doc">
             <Markdown text={spec.content} />
         </QuoteSelection>
     );

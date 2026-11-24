@@ -234,7 +234,7 @@ export function SpecPlanPanel({ run }: { run: Run }): ReactElement {
                 </div>
             )}
 
-            {batch && plan.repoId !== null && <BatchDialog repoId={plan.repoId} numbers={batch} onAdd={(n) => setBatch([...batch, n])} onClose={() => setBatch(null)} />}
+            {batch && plan.repoId !== null && <BatchDialog repoId={plan.repoId} numbers={batch} onAdd={(n) => setBatch([...batch, n])} onOpenParent={(_parent, subs) => setBatch(subs)} onClose={() => setBatch(null)} />}
         </div>
     );
 }

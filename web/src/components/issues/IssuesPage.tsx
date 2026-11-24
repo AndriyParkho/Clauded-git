@@ -9,8 +9,9 @@ import { stateDot } from '../Tabs';
 import { BrunoButton } from '../BrunoButton';
 import { CleanupButton } from '../CleanupDialog';
 import { BatchDialog } from './BatchDialog';
+import { ExistingBranchDialog, openBranchChat } from './ExistingBranch';
 import { IssueBody, labelStyle, timeAgo } from './IssueBody';
-import type { BatchItem, Issue, IssueFilter, IssueState, Repo, Run } from '../../../../shared/protocol';
+import type { BatchItem, ExistingBranch, Issue, IssueFilter, IssueState, Repo, Run } from '../../../../shared/protocol';
 
 interface StatusGroup {
     key: string;
@@ -172,18 +173,29 @@ export function IssuesPage(): ReactElement {
         }
     };
 
-    const implement = async (repoId: number, number: number): Promise<void> => {
+    /** Une branche déjà travaillée est signalée d'abord ; `force` relance l'implémentation dessus. */
+    const implement = async (repoId: number, number: number, force = false): Promise<void> => {
         setBusy(true);
         try {
+            if (!force) {
+                const { branch } = await api.existingBranch(repoId, number);
+                if (branch) {
+                    setExisting({ repoId, number, branch });
+                    return;
+                }
+            }
             const run = await withProgress(`Implémentation de l'issue #${number}`, (opId) => api.implement(repoId, number, planMode, opId));
             upsertRun(run);
             setActive(run.id);
-        } catch {
-            // L'erreur reste affichée dans le loader.
+        } catch (error) {
+            // Une erreur du lancement reste affichée dans le loader ; celle de la vérification, en notification.
+            if (!useStore.getState().progress) notify(String(error));
         } finally {
             setBusy(false);
         }
     };
+
+    const [existing, setExisting] = useState<{ repoId: number; number: number; branch: ExistingBranch } | null>(null);
 
     const waitingItem = (repoId: number, number: number): BatchItem | undefined => batch.find((b) => b.repoId === repoId && b.issueNumber === number);
 
@@ -376,11 +388,27 @@ export function IssuesPage(): ReactElement {
                     </div>
                 )}
             </div>
+            {existing && (
+                <ExistingBranchDialog
+                    number={existing.number}
+                    branch={existing.branch}
+                    onClose={() => setExisting(null)}
+                    onImplement={() => {
+                        setExisting(null);
+                        void implement(existing.repoId, existing.number, true);
+                    }}
+                    onChat={() => {
+                        setExisting(null);
+                        void openBranchChat(existing.repoId, existing.number).catch(() => undefined);
+                    }}
+                />
+            )}
             {batchOpen && checked && (
                 <BatchDialog
                     repoId={checked.repoId}
                     numbers={checked.numbers}
                     onAdd={(number) => check(checked.repoId, [number], true)}
+                    onOpenParent={(_parent, subs) => setIssues({ checked: { repoId: checked.repoId, numbers: subs } })}
                     onClose={() => setBatchOpen(false)}
                 />
             )}

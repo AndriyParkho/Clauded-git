@@ -499,10 +499,12 @@ button.has-error { border-color: var(--ko); }
    --------------------------------------------------------------------------------------------- */
 .quote-zone { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .quote-zone > .messages-wrap { flex: 1; }
-.quote-popover { position: fixed; z-index: 60; display: flex; gap: 6px; padding: 6px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
-.quote-comment { display: flex; flex-direction: column; gap: 6px; width: 320px; }
-.quote-comment textarea { resize: vertical; }
-.quote-comment-actions { display: flex; justify-content: flex-end; gap: 6px; }
+.quote-popover { position: fixed; z-index: 60; width: 380px; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55); }
+.quote-popover-text { border-left: 3px solid var(--line); padding-left: 10px; color: var(--dim); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; }
+.quote-popover-row { display: flex; align-items: flex-end; gap: 8px; }
+.quote-popover-row textarea { flex: 1; resize: none; border: none; background: transparent; padding: 4px 0; max-height: 120px; outline: none; field-sizing: content; }
+.quote-keep { padding: 2px 9px; font-size: 15px; line-height: 1.2; }
+::highlight(quote-reply) { background-color: rgba(122, 162, 247, 0.35); }
 .quote-stack { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 0; background: var(--panel); border-top: 1px solid var(--line); max-height: 34vh; overflow: auto; }
 .quote-item { position: relative; border-left: 3px solid var(--accent); background: var(--bg); border-radius: 0 6px 6px 0; padding: 6px 28px 6px 10px; font-size: 13px; }
 .quote-text { white-space: pre-wrap; color: var(--dim); }
@@ -545,3 +547,36 @@ button.has-error { border-color: var(--ko); }
 .plan-title { flex: 1; min-width: 0; }
 .plan-body { width: 100%; font-family: var(--mono); font-size: 12px; resize: vertical; }
 .spec-plan-actions { position: sticky; bottom: 0; background: var(--panel); padding: 8px 0; }
+
+/* Pages écrites par la session (artifacts) */
+.artifacts-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; }
+.artifact-chip { color: var(--accent); background: var(--user); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; text-decoration: none; font-family: var(--mono); }
+.artifact-chip:hover { border-color: var(--accent); }
+
+/* Branche déjà travaillée d'une issue */
+.existing-branch { font-size: 12.5px; }
+.existing-row { align-items: flex-start; }
+.existing-row .check { white-space: nowrap; }
+.existing-row .batch-title { white-space: normal; overflow: visible; }
+
+/* Tâches lancées en arrière-plan (sous-agents, commandes) */
+.tasks-strip { border-top: 1px solid var(--line); background: var(--panel); padding: 6px 12px; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; max-height: 24vh; overflow: auto; }
+.tasks-strip-head { display: flex; align-items: center; gap: 6px; color: var(--accent); }
+.tasks-strip-row { display: flex; gap: 10px; align-items: baseline; padding-left: 20px; }
+.tasks-strip-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot-background { background: transparent; border: 2px solid var(--accent); animation: pulse 1.6s infinite; box-sizing: border-box; }
+
+/* Discuter d'un brouillon de review dans le chat */
+.draft-discuss { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--line); padding-top: 6px; }
+.draft-discuss textarea { resize: vertical; }
+
+/* Liens GitHub de l'onglet (issue, PR) */
+.github-links { display: inline-flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.github-link { font-size: 12.5px; font-family: var(--mono); text-decoration: none; color: var(--accent); border: 1px solid var(--line); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
+.github-link:hover { border-color: var(--accent); }
+.github-link.state-merged { color: #bb9af7; }
+.github-link.state-closed { color: var(--dim); }
+.github-link.workflow-success { color: var(--ok); }
+.github-link.workflow-failure { color: var(--ko); border-color: var(--ko); }
+.github-link.workflow-running { color: var(--warn); }
+.github-link.workflow-neutral { color: var(--dim); }

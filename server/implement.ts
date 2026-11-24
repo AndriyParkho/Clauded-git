@@ -10,7 +10,7 @@ import { jobs, type JobStep } from './jobs.js';
 import { branchName, loadProfile, type Profile } from './profiles.js';
 import { repoSessions } from './repos.js';
 import { sessions } from './sessions/manager.js';
-import type { DependencyStatus, IssueDetail, IssueDetailResponse, IssueWorktree, JobInfo, Repo, Run, SessionHistoryItem, WorktreeInfo } from '../shared/protocol.js';
+import type { DependencyStatus, ExistingBranch, IssueDetail, IssueDetailResponse, IssueWorktree, JobInfo, Repo, Run, SessionHistoryItem, WorktreeInfo } from '../shared/protocol.js';
 
 async function exists(path: string): Promise<boolean> {
     try {
@@ -66,7 +66,12 @@ export function implementPrompt(repo: Repo, issue: IssueDetail, profile: Profile
         '2. Vérifie avec les outils du projet (tests, lint, typecheck) et corrige.',
         `3. Commit en Conventional Commits, avec \`Refs #${issue.number}\` dans le corps, puis pousse la branche (\`git push -u origin ${branch}\`).`,
         `4. Ouvre la PR en draft vers \`${base}\` avec \`gh pr create --draft --base ${base}\` ; sa description se termine par \`Closes #${issue.number}\`.`,
-        '5. Termine par un court résumé de ce que tu as fait et des décisions prises.',
+        ...(profile.selfReviewSkill
+            ? [
+                  `5. Relis ta PR avec \`/${profile.selfReviewSkill}\` (en lui donnant le numéro de la PR). Ne publie rien sur GitHub (ni commentaire, ni review) : corrige ce qui est justifié, vérifie de nouveau, commit et pousse. Ce que tu écartes, dis pourquoi dans ton résumé.`,
+                  '6. Termine par un court résumé : ce que tu as fait, les décisions prises, ce que la relecture a trouvé et corrigé.',
+              ]
+            : ['5. Termine par un court résumé de ce que tu as fait et des décisions prises.']),
     ];
     if (installing && profile.install) {
         lines.push('', `Une installation des dépendances (\`${profile.install}\`) tourne en tâche de fond dans ce worktree : ne la relance pas. Si une commande échoue faute de dépendances, attends un peu et réessaie.`);
@@ -93,8 +98,8 @@ export function branchBelongsToIssue(branch: string | null | undefined, issue: I
 }
 
 /** Une branche distante qui appartient à l'issue, s'il y en a une (après `git fetch`). */
-export async function remoteBranchForIssue(repo: Repo, issue: IssueDetail): Promise<string | undefined> {
-    await git(repo.path, ['fetch', 'origin', '--prune']);
+export async function remoteBranchForIssue(repo: Repo, issue: IssueDetail, options: { fetch?: boolean } = {}): Promise<string | undefined> {
+    if (options.fetch !== false) await git(repo.path, ['fetch', 'origin', '--prune']);
     const refs = await gitOk(repo.path, ['for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin']).catch(() => '');
     return refs
         .split('\n')
@@ -121,6 +126,76 @@ export async function sessionsForIssue(repo: Repo, issue: IssueDetail, worktree:
     const known = new Set(runs.map((r) => r.sessionId).filter((id): id is string => id !== null));
     const all = await repoSessions(repo, 300).catch(() => []);
     return all.filter((s) => !known.has(s.sessionId) && (branchBelongsToIssue(s.gitBranch, issue) || (worktree !== null && s.cwd === worktree.path)));
+}
+
+/**
+ * Branche où l'issue a déjà du travail, cherchée comme le fait le lancement (worktree sorti, branche
+ * liée, PR ouverte, branche distante au numéro de l'issue). Une branche vide (aucun commit par rapport
+ * à la base, pas de PR, rien de modifié) ne compte pas : on peut y implémenter sans rien perdre.
+ * `fetch: false` quand l'appelant a déjà fait `git fetch` (analyse d'un lot).
+ */
+export async function findExistingBranch(repo: Repo, issue: IssueDetail, profile: Profile, options: { fetch?: boolean } = {}): Promise<ExistingBranch | null> {
+    const worktree = await issueWorktree(repo, profile, issue);
+    const openPr = issue.pullRequests.find((pr) => pr.state === 'OPEN') ?? null;
+    let branch: string | null = null;
+    let source: ExistingBranch['source'] = 'worktree';
+    if (worktree?.branch) branch = worktree.branch;
+    else if (issue.linkedBranches[0]) {
+        branch = issue.linkedBranches[0];
+        source = 'linked';
+    } else if (openPr) {
+        branch = openPr.headRefName;
+        source = 'pr';
+    } else {
+        branch = (await remoteBranchForIssue(repo, issue, options)) ?? null;
+        source = 'remote';
+    }
+    if (!branch) return null;
+    if (options.fetch !== false && source !== 'remote') await git(repo.path, ['fetch', 'origin', branch]);
+
+    const inWorktree = worktree?.branch === branch ? worktree.path : null;
+    const ref = inWorktree ? 'HEAD' : `origin/${branch}`;
+    const cwd = inWorktree ?? repo.path;
+    const count = await git(cwd, ['rev-list', '--count', `origin/${profile.baseBranch}..${ref}`]);
+    const commits = count.code === 0 ? Number(count.stdout.trim()) : null;
+    const last = await git(cwd, ['log', '-1', '--format=%s%x00%cI', `origin/${profile.baseBranch}..${ref}`]);
+    const [subject, date] = last.code === 0 ? last.stdout.trim().split('\0') : [];
+    const when = date ? new Date(date).toLocaleString('fr-FR', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : null;
+    const uncommitted = inWorktree ? (await worktreeStatus(inWorktree).catch(() => undefined))?.changedFiles ?? 0 : 0;
+    const pr = openPr && openPr.headRefName === branch ? openPr : ((await pullRequestForBranch(repo, branch).catch(() => undefined)) ?? null);
+    if (!commits && !pr && uncommitted === 0) return null;
+    return { branch, source, worktree: inWorktree, pr, commits, lastCommit: subject ? `${subject}${when ? ` (${when})` : ''}` : null, uncommitted };
+}
+
+/** Consigne proposée (dans la saisie, pas envoyée) pour faire le point sur une branche déjà travaillée. */
+export function branchChatPrompt(repo: Repo, issue: IssueDetail, branch: string, base: string): string {
+    return [
+        `Où en est la branche \`${branch}\` de l'issue #${issue.number} ?`,
+        '',
+        `Du travail a déjà été fait dessus (tu es dans son worktree). Avant de toucher à quoi que ce soit : regarde les commits et le diff par rapport à \`origin/${base}\`, les modifications non commitées, et la PR de la branche s'il y en a une (\`gh pr view\`, commentaires de review compris). Compare avec l'issue ci-dessous, puis résume : ce qui est fait, ce qui manque, ce qui te semble à revoir. Ne modifie rien sans mon accord.`,
+        '',
+        issueAsContext(repo, issue),
+    ].join('\n');
+}
+
+/**
+ * Ouvre un onglet sur la branche déjà travaillée d'une issue, sans consigne : le worktree est sorti
+ * au besoin, et la consigne de point d'étape attend dans la saisie.
+ */
+export async function startBranchChat(repo: Repo, number: number, opId: string | undefined): Promise<{ run: Run; draft: string }> {
+    const progress = new Progress(opId);
+    return progress.run(async () => {
+        const run = await implementIssue(repo, number, { planMode: false, chatOnly: true }, progress);
+        const issue = await getIssue(repo, number);
+        return { run, draft: branchChatPrompt(repo, issue, run.branch ?? '', run.baseBranch ?? (await loadProfile(repo)).baseBranch) };
+    });
+}
+
+/** Avant « Implémenter » : la branche déjà travaillée de l'issue, sauf si son onglet existe (il sera simplement rouvert). */
+export async function existingBranchForIssue(repo: Repo, number: number): Promise<ExistingBranch | null> {
+    if (await reopenableImplementRun(repo, number)) return null;
+    const [issue, profile] = await Promise.all([getIssue(repo, number), loadProfile(repo)]);
+    return findExistingBranch(repo, issue, profile);
 }
 
 /** Tout ce que la page de détail d'une issue affiche. */
@@ -185,6 +260,11 @@ export async function startImplement(repo: Repo, number: number, options: { plan
 
 export interface ImplementOptions {
     planMode: boolean;
+    /**
+     * Ouvre seulement l'onglet sur la branche de l'issue (worktree, install, session), sans consigne
+     * d'implémentation : pour discuter d'une branche où il y a déjà du travail.
+     */
+    chatOnly?: boolean;
     /** Issues/PR dont dépend celle-ci : la branche part de la PR ouverte de la première (stacked PR). */
     dependencies?: DependencyStatus[];
 }
@@ -204,7 +284,7 @@ export async function implementIssue(repo: Repo, number: number, options: Implem
         return getRun(existing.id) ?? existing;
     }
 
-    progress.plan([S.issue, S.fetch, S.add, S.session, S.prompt]);
+    progress.plan([S.issue, S.fetch, S.add, S.session, ...(options.chatOnly ? [] : [S.prompt])]);
     progress.step(S.issue);
     const profile = await loadProfile(repo);
     const issue = await getIssue(repo, number);
@@ -271,6 +351,7 @@ export async function implementIssue(repo: Repo, number: number, options: Implem
 
     progress.step(S.session);
     await sessions.open(run.id);
+    if (options.chatOnly) return getRun(run.id) ?? run;
     progress.step(S.prompt, options.planMode ? 'en mode plan' : undefined);
     await sessions.prompt(run.id, implementPrompt(repo, issue, profile, branch, worktree, installing, dependencies));
     return getRun(run.id) ?? run;

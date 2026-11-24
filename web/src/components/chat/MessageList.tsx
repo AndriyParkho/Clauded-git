@@ -92,6 +92,13 @@ export function ItemView({ item }: { item: Item }): ReactElement | null {
                     session · {item.model} · Claude Code {item.version} · {item.commands} commandes · {item.skills} skills
                 </div>
             );
+        case 'task':
+            return (
+                <div className={`meta task-line ${item.status === 'failed' ? 'error' : ''}`} title={item.summary || undefined}>
+                    {item.status === 'started' ? '↗ lancé en arrière-plan' : item.status === 'completed' ? '✓ terminé en arrière-plan' : item.status === 'failed' ? '✗ échec en arrière-plan' : '■ arrêté'} : {item.description}
+                    {item.summary && item.status !== 'started' && <span className="muted"> · {item.summary.length > 160 ? `${item.summary.slice(0, 160)}…` : item.summary}</span>}
+                </div>
+            );
         case 'compact':
             return (
                 <div className="meta">

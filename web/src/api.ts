@@ -1,9 +1,12 @@
 import type {
+    ArtifactFile,
     BatchAnalysis,
     BatchItem,
     BatchResult,
     BrunoState,
     CleanupList,
+    ExistingBranch,
+    RunLinks,
     IssueDependency,
     IssueDetailResponse,
     IssueFilter,
@@ -56,6 +59,7 @@ export interface Profile {
     copyFiles: string[];
     commands: Record<string, string>;
     reviewSkill: string | null;
+    selfReviewSkill: string | null;
     instructions: string;
     bruno: string | null;
 }
@@ -81,10 +85,14 @@ export const api = {
     resumeIssueSession: (repoId: number, number: number, sessionId: string) => request<Run>('POST', `/api/repos/${repoId}/issues/${number}/resume`, { sessionId }),
     openIn: (path: string, app: OpenApp) => request<{ ok: true }>('POST', '/api/open-in', { path, app }),
     issueChat: (repoId: number, number: number) => request<{ run: Run; draft: string }>('POST', `/api/repos/${repoId}/issues/${number}/chat`),
+    /** Branche où l'issue a déjà du travail (null : rien, ou son onglet existe). */
+    existingBranch: (repoId: number, number: number) => request<{ branch: ExistingBranch | null }>('GET', `/api/repos/${repoId}/issues/${number}/existing-branch`),
+    /** Onglet sur la branche existante, sans consigne ; `draft` = question de point d'étape. */
+    branchChat: (repoId: number, number: number, opId?: string) => request<{ run: Run; draft: string }>('POST', `/api/repos/${repoId}/issues/${number}/branch-chat`, { opId }),
     implement: (repoId: number, number: number, planMode: boolean, opId?: string) => request<Run>('POST', `/api/repos/${repoId}/issues/${number}/implement`, { planMode, opId }),
     /** Dépendances entre des issues (et envers des issues/PR hors sélection) ; `claude` ajoute l'avis de Claude. */
     dependencies: (repoId: number, issues: number[], claude = false) => request<BatchAnalysis>('POST', `/api/repos/${repoId}/issues/dependencies`, { issues, claude }),
-    batch: (repoId: number, body: { issues: number[]; dependencies: Array<Pick<IssueDependency, 'issue' | 'dependsOn'>>; planMode: boolean; opId?: string }) => request<BatchResult>('POST', `/api/repos/${repoId}/issues/batch`, body),
+    batch: (repoId: number, body: { issues: number[]; dependencies: Array<Pick<IssueDependency, 'issue' | 'dependsOn'>>; links?: Array<Pick<IssueDependency, 'issue' | 'dependsOn'>>; planMode: boolean; opId?: string }) => request<BatchResult>('POST', `/api/repos/${repoId}/issues/batch`, body),
     cleanup: (repoId: number) => request<CleanupList>('GET', `/api/repos/${repoId}/cleanup`),
     /** Lance la suppression en tâche de fond : le job rendu se suit par websocket. */
     runCleanup: (repoId: number, ids: string[]) => request<JobInfo>('POST', `/api/repos/${repoId}/cleanup`, { ids }),
@@ -137,6 +145,9 @@ export const api = {
     deleteDraft: (repoId: number, number: number, id: number) => request<ReviewState>('DELETE', `/api/repos/${repoId}/pulls/${number}/review/drafts/${id}`),
     publishReview: (repoId: number, number: number) => request<ReviewState>('POST', `/api/repos/${repoId}/pulls/${number}/review/publish`),
 
+    /** Liens GitHub d'un onglet : son issue et sa PR, ou sa PR et ses issues. */
+    runLinks: (runId: number) => request<RunLinks>('GET', `/api/runs/${runId}/links`),
+    artifacts: (runId: number) => request<ArtifactFile[]>('GET', `/api/runs/${runId}/artifacts`),
     specs: () => request<Run[]>('GET', '/api/specs'),
     /** Nouvel onglet spec dans un dépôt ou un dossier (créé au besoin) ; `draft` = consigne pour la saisie. */
     startSpec: (body: { repoId?: number; cwd?: string; file?: string }) => request<{ run: Run; draft: string }>('POST', '/api/specs', body),

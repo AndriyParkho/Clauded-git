@@ -1,7 +1,11 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { findImplementRun } from './db.js';
+import { git } from './git.js';
+import { findExistingBranch, reopenableImplementRun } from './implement.js';
+import { loadProfile } from './profiles.js';
+import { slots } from './slots.js';
 import { getIssue, graphqlPartial, pullRequestForBranch, repoSlug } from './github.js';
-import type { BatchAnalysis, DependencyStatus, IssueDependency, IssueDetail, Repo } from '../shared/protocol.js';
+import type { BatchAnalysis, DependencyStatus, ExistingBranch, IssueDependency, IssueDetail, Repo } from '../shared/protocol.js';
 
 // Formulations courantes d'une dépendance dans le texte d'une issue (FR / EN), suivies d'une ou
 // plusieurs références `#123`. « bloque #n » / « blocks #n » donnent la dépendance inverse.
@@ -37,6 +41,7 @@ interface RefNode {
     state: 'OPEN' | 'CLOSED' | 'MERGED';
     headRefName?: string;
     closedByPullRequestsReferences?: { nodes: Array<{ number: number; state: 'OPEN' | 'CLOSED' | 'MERGED'; headRefName: string }> };
+    subIssues?: { nodes: Array<{ state: 'OPEN' | 'CLOSED' }> };
 }
 
 /**
@@ -52,7 +57,7 @@ export async function dependencyStatuses(repo: Repo, numbers: number[], options:
         .map(
             (n) => `r${n}: issueOrPullRequest(number: ${n}) {
                 __typename
-                ... on Issue { number title state closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { nodes { number state headRefName } } }
+                ... on Issue { number title state closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { nodes { number state headRefName } } subIssues(first: 50) { nodes { state } } }
                 ... on PullRequest { number title state headRefName }
             }`,
         )
@@ -76,6 +81,8 @@ export async function dependencyStatuses(repo: Repo, numbers: number[], options:
             const pr = branch ? await pullRequestForBranch(repo, branch).catch(() => undefined) : undefined;
             if (pr?.state === 'OPEN') openPr = { number: pr.number, state: pr.state, headRefName: pr.headRefName };
         }
+        // Une parente n'a pas de PR à elle : ses dépendantes attendent qu'elle soit fermée.
+        const openSubIssues = node.subIssues?.nodes.filter((sub) => sub.state === 'OPEN').length ?? 0;
         result.set(n, {
             number: n,
             title: node.title,
@@ -83,6 +90,7 @@ export async function dependencyStatuses(repo: Repo, numbers: number[], options:
             state: node.state,
             openPr: openPr ? { number: openPr.number, branch: openPr.headRefName } : null,
             ready: node.state !== 'OPEN' || openPr !== null,
+            ...(openSubIssues > 0 ? { openSubIssues } : {}),
         });
     }
     return result;
@@ -171,8 +179,10 @@ function add(list: IssueDependency[], dependency: IssueDependency): void {
 
 /**
  * Dépendances entre les issues sélectionnées, et envers des issues/PR hors sélection : relations
- * « blocked by » de GitHub, parent ↔ sous-issues, formulations du texte (« dépend de #12 »…), et
- * sur demande l'avis de Claude.
+ * « blocked by » de GitHub, formulations du texte (« dépend de #12 »…), sur demande l'avis de
+ * Claude, et celles héritées de la parente (une sous-issue sans dépendance dans le lot attend ce
+ * qui bloque sa parente). Les issues sélectionnées qui sont elles-mêmes parentes sont écartées du
+ * lot (`parents`) : on lance leurs sous-issues à part ; leurs dépendances sont gardées.
  */
 export async function analyzeDependencies(repo: Repo, numbers: number[], options: { claude: boolean }): Promise<BatchAnalysis> {
     const selected = new Set(numbers);
@@ -194,7 +204,7 @@ export async function analyzeDependencies(repo: Repo, numbers: number[], options
     });
     for (const issue of issues) {
         for (const dep of native.get(issue.number) ?? []) note(issue.number, dep, 'github', `#${issue.number} est marquée « blocked by #${dep} » sur GitHub`);
-        // Un parent sélectionné avec ses sous-issues attend qu'elles soient faites.
+        // Une parente sélectionnée avec ses sous-issues attend qu'elles soient faites.
         for (const sub of issue.subIssues) if (selected.has(sub.number)) note(issue.number, sub.number, 'subissue', `#${sub.number} est une sous-issue de #${issue.number}`);
         const text = [issue.body, ...issue.commentList.map((c) => c.body)].join('\n');
         const found = textDependencies(text);
@@ -210,18 +220,64 @@ export async function analyzeDependencies(repo: Repo, numbers: number[], options
         }
     }
 
+    // Héritage : une sous-issue qui ne dépend de rien dans le lot attend ce qui bloque sa parente
+    // (« B bloquée par X » vaut pour les sous-issues de B qui partent les premières).
+    const parentsOutside = [...new Set(issues.map((i) => i.parent).filter((p): p is number => p !== null && !selected.has(p)))];
+    if (parentsOutside.length > 0) {
+        const inherited = await blockedBy(repo, parentsOutside).catch((error: unknown) => {
+            warnings.push(`Relations « blocked by » des issues parentes non lues : ${String(error)}`);
+            return new Map<number, number[]>();
+        });
+        for (const issue of issues) {
+            if (issue.parent === null || selected.has(issue.parent)) continue;
+            if (dependencies.some((d) => d.issue === issue.number && selected.has(d.dependsOn))) continue;
+            for (const dep of inherited.get(issue.parent) ?? []) {
+                if (dep !== issue.number) note(issue.number, dep, 'github', `hérité de la parente #${issue.parent}, marquée « blocked by #${dep} » sur GitHub`);
+            }
+        }
+    }
+
+    // Parentes sélectionnées : écartées du lot. Ce qui dépend d'elles les attend comme une issue hors
+    // sélection (jusqu'à leur fermeture, puisqu'elles n'ont pas de PR).
+    const parents = issues
+        .filter((i) => i.subIssues.some((sub) => sub.state === 'OPEN'))
+        .map((i) => ({ number: i.number, title: i.title, openSubIssues: i.subIssues.filter((sub) => sub.state === 'OPEN').map((sub) => sub.number) }));
+    const parentNumbers = new Set(parents.map((p) => p.number));
+    for (const d of dependencies) if (parentNumbers.has(d.dependsOn) && !parentNumbers.has(d.issue)) outside.add(d.dependsOn);
+    // Une parente qui « dépend » de ses propres sous-issues : relation sans objet une fois écartée.
+    const relevant = dependencies.filter((d) => !(parentNumbers.has(d.issue) && d.source === 'subissue'));
+
+    // Branches où une issue du lot a déjà du travail (un seul `git fetch` pour tout le lot). Une issue
+    // dont l'onglet d'implémentation existe n'est pas concernée : il sera simplement rouvert.
+    const existing: BatchAnalysis['existing'] = [];
+    const profile = await loadProfile(repo);
+    await git(repo.path, ['fetch', 'origin', '--prune']);
+    for (const issue of issues) {
+        if (parentNumbers.has(issue.number) || (await reopenableImplementRun(repo, issue.number))) continue;
+        const branch: ExistingBranch | null = await findExistingBranch(repo, issue, profile, { fetch: false }).catch(() => null);
+        if (branch) existing.push({ number: issue.number, branch });
+    }
+    // Ce qui dépend d'une issue écartée (branche existante) la suit comme une issue hors sélection.
+    const existingNumbers = new Set(existing.map((e) => e.number));
+    for (const d of relevant) if (existingNumbers.has(d.dependsOn)) outside.add(d.dependsOn);
+
     // Hors sélection : seules comptent les issues/PR encore ouvertes (une issue fermée est déjà dans la base).
     const statuses = await dependencyStatuses(repo, [...outside]).catch((error: unknown) => {
         warnings.push(`État des dépendances hors sélection non lu : ${String(error)}`);
         return new Map<number, DependencyStatus>();
     });
     const external = [...statuses.values()].filter((s) => s.state === 'OPEN');
+
+
     const kept = new Set(external.map((s) => s.number));
     return {
         issues: issues.map((i) => ({ number: i.number, title: i.title, state: i.state })),
-        dependencies: dependencies.filter((d) => selected.has(d.dependsOn) || kept.has(d.dependsOn)),
+        dependencies: relevant.filter((d) => selected.has(d.dependsOn) || kept.has(d.dependsOn)),
         external,
         warnings,
+        parents,
+        slots: slots(),
+        existing,
     };
 }
 

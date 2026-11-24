@@ -1,10 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { deleteBatchItem, getBatchItem, getRepo, listBatchItems, saveBatchItem } from './db.js';
 import { dependencyStatuses, launchOrder } from './dependencies.js';
-import { getIssue } from './github.js';
+import { addBlockedByLinks, getIssue } from './github.js';
 import { implementIssue, reopenableImplementRun } from './implement.js';
 import { Progress, SubProgress } from './progress.js';
 import { sessions } from './sessions/manager.js';
+import { occupying, queuedDetail, slotFree } from './slots.js';
 import type { BatchItem, BatchResult, DependencyStatus, IssueDependency, Repo, Run } from '../shared/protocol.js';
 
 /** Diffuse la liste des issues en attente à chaque changement. */
@@ -26,8 +27,14 @@ function serialized<T>(repoId: number, work: () => Promise<T>): Promise<T> {
 }
 
 /** Ce qu'attend une issue, en clair : `pending` sont les dépendances elles-mêmes en attente (ou en échec). */
-function waitingDetail(missing: number[], pending: Set<number>): string {
-    return `attend ${missing.map((n) => (pending.has(n) ? `#${n} (pas encore lancée)` : `#${n} (pas encore de PR)`)).join(', ')}`;
+function waitingDetail(missing: number[], pending: Set<number>, statuses: Map<number, DependencyStatus> = new Map()): string {
+    const why = (n: number): string => {
+        if (pending.has(n)) return `#${n} (pas encore lancée)`;
+        const parent = statuses.get(n)?.openSubIssues;
+        if (parent) return `#${n} (issue parente : qu'elle soit fermée, ${parent} sous-issue${parent > 1 ? 's' : ''} ouverte${parent > 1 ? 's' : ''})`;
+        return `#${n} (pas encore de PR)`;
+    };
+    return `attend ${missing.map(why).join(', ')}`;
 }
 
 /** Précision affichée au lancement d'une issue dépendante. */
@@ -36,8 +43,9 @@ function stackDetail(statuses: DependencyStatus[]): string | undefined {
     return stacked?.openPr ? `empilée sur la PR #${stacked.openPr.number} (${stacked.openPr.branch})` : undefined;
 }
 
+/** Lance une implémentation ; elle occupe une place dès maintenant (voir `slots.ts`). */
 async function launch(repo: Repo, number: number, planMode: boolean, dependencies: DependencyStatus[], progress: Progress): Promise<Run> {
-    return serialized(repo.id, () => implementIssue(repo, number, { planMode, dependencies }, progress));
+    return occupying(() => serialized(repo.id, () => implementIssue(repo, number, { planMode, dependencies }, progress)));
 }
 
 export interface BatchRequest {
@@ -45,12 +53,18 @@ export interface BatchRequest {
     dependencies: Array<Pick<IssueDependency, 'issue' | 'dependsOn'>>;
     planMode: boolean;
     opId?: string | undefined;
+    /**
+     * Dépendances à écrire sur GitHub en « bloquée par » avant de lancer : celles qui touchent une
+     * issue parente écartée du lot, pour qu'elles comptent quand on lancera ses sous-issues.
+     */
+    links?: Array<Pick<IssueDependency, 'issue' | 'dependsOn'>>;
 }
 
 /**
  * Lance l'implémentation de plusieurs issues, chacune dans son worktree et son onglet. Celles dont
  * les dépendances sont prêtes (fermées, ou avec une PR ouverte sur laquelle empiler) partent tout de
- * suite ; les autres sont mises en attente et partiront quand la PR de leurs dépendances existera.
+ * suite, dans la limite des places libres ; les autres sont mises en attente et partiront quand la PR
+ * de leurs dépendances existera, ou quand une place se libérera.
  */
 export async function startBatch(repo: Repo, request: BatchRequest): Promise<BatchResult> {
     const numbers = [...new Set(request.issues)];
@@ -58,7 +72,14 @@ export async function startBatch(repo: Repo, request: BatchRequest): Promise<Bat
     const order = launchOrder(numbers, request.dependencies);
     const progress = new Progress(request.opId);
     const label = (n: number): string => `Issue #${n}`;
-    progress.plan(order.map(label));
+    const links = request.links ?? [];
+    progress.plan([...(links.length ? ['Dépendances des issues parentes écrites sur GitHub'] : []), ...order.map(label)]);
+    if (links.length) {
+        progress.step('Dépendances des issues parentes écrites sur GitHub', links.map((l) => `#${l.issue} bloquée par #${l.dependsOn}`).join(', '));
+        // Un refus n'empêche pas le lot : il reste signalé dans l'étape.
+        const warnings = await addBlockedByLinks(repo, links).catch((error: unknown) => [String(error)]);
+        if (warnings.length) progress.detail(warnings.join(' ; '));
+    }
 
     const result: BatchResult = { started: [], waiting: [], failed: [] };
     const waitingNumbers = new Set<number>();
@@ -72,8 +93,17 @@ export async function startBatch(repo: Repo, request: BatchRequest): Promise<Bat
             const missing = reopened ? [] : dependsOn.filter((d) => blockedInBatch.includes(d) || !statuses.get(d)?.ready);
             if (missing.length > 0) {
                 const title = (await getIssue(repo, number)).title;
-                const item: Omit<BatchItem, 'createdAt'> = { repoId: repo.id, issueNumber: number, title, dependsOn, planMode: request.planMode, state: 'waiting', detail: waitingDetail(missing, waitingNumbers) };
+                const item: Omit<BatchItem, 'createdAt'> = { repoId: repo.id, issueNumber: number, title, dependsOn, planMode: request.planMode, state: 'waiting', detail: waitingDetail(missing, waitingNumbers, statuses) };
                 progress.step(label(number), `en attente : ${item.detail.replace(/^attend /, '')}`);
+                saveBatchItem(item);
+                waitingNumbers.add(number);
+                result.waiting.push(getBatchItem(repo.id, number) ?? { ...item, createdAt: new Date().toISOString() });
+                continue;
+            }
+            if (!reopened && !slotFree()) {
+                const title = (await getIssue(repo, number)).title;
+                const item: Omit<BatchItem, 'createdAt'> = { repoId: repo.id, issueNumber: number, title, dependsOn, planMode: request.planMode, state: 'waiting', detail: queuedDetail() };
+                progress.step(label(number), item.detail);
                 saveBatchItem(item);
                 waitingNumbers.add(number);
                 result.waiting.push(getBatchItem(repo.id, number) ?? { ...item, createdAt: new Date().toISOString() });
@@ -134,8 +164,9 @@ export function checkWaiting(repoId: number): Promise<void> {
         for (const item of items) {
             // Une dépendance elle-même en attente n'a pas de PR : rien à faire.
             const missing = item.dependsOn.filter((d) => waiting.has(d) || !statuses.get(d)?.ready);
-            if (missing.length > 0) {
-                const detail = waitingDetail(missing, waiting);
+            // Prête mais pas de place : en file, dans l'ordre d'arrivée.
+            const detail = missing.length > 0 ? waitingDetail(missing, waiting, statuses) : slotFree() ? null : queuedDetail();
+            if (detail !== null) {
                 if (detail !== item.detail) {
                     saveBatchItem({ ...item, detail });
                     changed();
@@ -180,14 +211,14 @@ export function cancelItem(repoId: number, issueNumber: number): void {
 }
 
 /**
- * Surveille les issues en attente : dès qu'un onglet d'implémentation dont elles dépendent termine
- * un tour (sa PR vient sans doute d'être ouverte), puis toutes les 5 min (PR ouverte ailleurs).
+ * Surveille les issues en attente : dès qu'un onglet d'implémentation termine un tour (sa PR vient
+ * sans doute d'être ouverte, et une place se libère), puis toutes les 5 min (PR ouverte ailleurs).
  */
 export function watchBatches(): void {
     sessions.on('run', (run) => {
-        if (run.type !== 'implement' || run.state !== 'idle' || run.repoId === null || run.issueNumber === null) return;
-        const issue = run.issueNumber;
-        if (listBatchItems(run.repoId).some((i) => i.state === 'waiting' && i.dependsOn.includes(issue))) scheduleCheck(run.repoId);
+        if (run.type !== 'implement' || !['idle', 'closed', 'error'].includes(run.state)) return;
+        // Une place libérée profite aux files de tous les dépôts.
+        for (const repoId of new Set(listBatchItems().filter((i) => i.state === 'waiting').map((i) => i.repoId))) scheduleCheck(repoId);
     });
     const all = (): void => {
         for (const repoId of new Set(listBatchItems().map((i) => i.repoId))) scheduleCheck(repoId, 0);

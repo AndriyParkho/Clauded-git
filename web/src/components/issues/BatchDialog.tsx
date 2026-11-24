@@ -4,6 +4,7 @@ import { api } from '../../api';
 import { useStore } from '../../store';
 import { Modal } from '../Modal';
 import { withProgress } from '../Progress';
+import { ExistingBranchInfo, openBranchChat } from './ExistingBranch';
 import type { BatchAnalysis, DependencySource, DependencyStatus, IssueDependency } from '../../../../shared/protocol';
 
 const SOURCES: Record<DependencySource, string> = { github: 'GitHub', text: 'texte', subissue: 'sous-issue', claude: 'Claude', manual: 'ajoutée' };
@@ -62,6 +63,8 @@ interface Props {
     repoId: number;
     numbers: number[];
     onAdd: (number: number) => void;
+    /** Remplace la sélection par les sous-issues ouvertes d'une issue parente (son propre lot). */
+    onOpenParent?: (parent: number, subIssues: number[]) => void;
     onClose: () => void;
 }
 
@@ -69,7 +72,7 @@ interface Props {
  * Lancement de l'implémentation de plusieurs issues : dépendances détectées (modifiables), ordre
  * de lancement et PR empilées, puis lancement en lot.
  */
-export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactElement {
+export function BatchDialog({ repoId, numbers, onAdd, onOpenParent, onClose }: Props): ReactElement {
     const notify = useStore((s) => s.notify);
     const upsertRun = useStore((s) => s.upsertRun);
     const setActive = useStore((s) => s.setActive);
@@ -81,6 +84,8 @@ export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactEl
     const [removed, setRemoved] = useState<Set<string>>(new Set());
     const [planMode, setPlanMode] = useState(false);
     const [adding, setAdding] = useState<number | null>(null);
+    /** Issues à branche existante qu'on relance quand même. */
+    const [resume, setResume] = useState<Set<number>>(new Set());
 
     const analyze = useCallback(
         async (claude: boolean): Promise<void> => {
@@ -98,6 +103,10 @@ export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactEl
     );
 
     useEffect(() => {
+        // Nouvelle sélection (lot d'une parente ouvert depuis celui-ci) : on repart de zéro.
+        setManual([]);
+        setRemoved(new Set());
+        setResume(new Set());
         void analyze(false);
     }, [analyze]);
 
@@ -107,8 +116,19 @@ export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactEl
     }, [analysis, manual, removed]);
     const external = analysis?.external ?? [];
     const titles = new Map([...(analysis?.issues ?? []), ...external].map((i) => [i.number, i.title]));
-    const { plan, error: cycle } = planBatch(numbers, dependencies, external);
-    const startNow = plan.filter((p) => p.wave === 0).length;
+    // Les issues parentes ne sont pas lancées : on lance leurs sous-issues à part.
+    const parents = analysis?.parents ?? [];
+    const parentNumbers = new Set(parents.map((p) => p.number));
+    // Une issue qui a déjà une branche travaillée est écartée, sauf si on la reprend.
+    const existing = analysis?.existing ?? [];
+    const setAside = new Set(existing.filter((e) => !resume.has(e.number)).map((e) => e.number));
+    const launchable = numbers.filter((n) => !parentNumbers.has(n) && !setAside.has(n));
+    const { plan, error: cycle } = planBatch(launchable, dependencies, external);
+    const ready = plan.filter((p) => p.wave === 0).length;
+    const slots = analysis?.slots;
+    const startNow = slots ? Math.min(ready, Math.max(0, slots.max - slots.busy)) : ready;
+    // Dépendances qui touchent une parente, trouvées ailleurs que sur GitHub : écrites en « bloquée par ».
+    const links = dependencies.filter((d) => (parentNumbers.has(d.issue) || parentNumbers.has(d.dependsOn)) && d.source !== 'github' && d.source !== 'subissue');
 
     const remove = (d: IssueDependency): void => {
         setRemoved((s) => new Set(s).add(key(d)));
@@ -127,12 +147,18 @@ export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactEl
     const launch = async (): Promise<void> => {
         try {
             const result = await withProgress(`Implémentation de ${numbers.length} issues`, (opId) =>
-                api.batch(repoId, { issues: numbers, dependencies: dependencies.map((d) => ({ issue: d.issue, dependsOn: d.dependsOn })), planMode, opId }),
+                api.batch(repoId, {
+                    issues: launchable,
+                    dependencies: dependencies.map((d) => ({ issue: d.issue, dependsOn: d.dependsOn })),
+                    links: links.map((d) => ({ issue: d.issue, dependsOn: d.dependsOn })),
+                    planMode,
+                    opId,
+                }),
             );
             for (const run of result.started) upsertRun(run);
             if (result.started[0]) setActive(result.started[0].id);
             const parts = [`${result.started.length} lancée${result.started.length > 1 ? 's' : ''}`];
-            if (result.waiting.length) parts.push(`${result.waiting.length} en attente (${result.waiting.map((w) => `#${w.issueNumber}`).join(', ')}) : elles partiront quand la PR de leur dépendance sera ouverte`);
+            if (result.waiting.length) parts.push(`${result.waiting.length} en attente (${result.waiting.map((w) => `#${w.issueNumber}`).join(', ')}) : elles partiront d'elles-mêmes (PR de leur dépendance ouverte, ou place libérée)`);
             if (result.failed.length) parts.push(`échec : ${result.failed.map((f) => `#${f.issueNumber} (${f.error})`).join(' ; ')}`);
             notify(parts.join(' · '));
             setIssues({ checked: null });
@@ -147,7 +173,7 @@ export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactEl
     return (
         <Modal className="batch-modal" onClose={onClose}>
             <div className="batch-head">
-                <strong>Implémenter {numbers.length} issues</strong>
+                <strong>Implémenter {launchable.length} issue{launchable.length > 1 ? 's' : ''}</strong>
                 <span className="spacer" />
                 <button className="small" onClick={onClose} title="Fermer">
                     ×
@@ -156,6 +182,7 @@ export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactEl
             <p className="muted batch-intro">
                 Chaque issue a son worktree et son onglet. Les issues indépendantes démarrent tout de suite, en parallèle. Une issue qui dépend d'une autre attend que la PR de celle-ci soit ouverte, puis démarre sur sa branche :
                 sa PR est empilée dessus (stacked PR) et GitHub la reciblera quand la première sera mergée.
+                {slots && ` Au plus ${slots.max} implémentations en même temps : les suivantes partent seules dès qu'une place se libère.`}
             </p>
 
             {loading === 'github' && (
@@ -209,26 +236,99 @@ export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactEl
                                 </div>
                                 {(p.stack || p.waitsOutside.length > 0) && (
                                     <div className="muted batch-note">
-                                        {p.waitsOutside.length > 0 && <>attend que {p.waitsOutside.map((n) => `#${n}`).join(', ')} ait une PR · </>}
-                                        {p.stack && <>branche et PR empilées sur {p.stack}</>}
+                                        {[
+                                            ...(p.waitsOutside.length > 0
+                                                ? [`attend ${p.waitsOutside.map((n) => (parentNumbers.has(n) || external.find((e) => e.number === n)?.openSubIssues ? `que #${n} (parente) soit fermée` : `que #${n} ait une PR`)).join(', ')}`]
+                                                : []),
+                                            ...(p.stack ? [`branche et PR empilées sur ${p.stack}`] : []),
+                                        ].join(' · ')}
                                     </div>
                                 )}
                             </li>
                         ))}
                     </ol>
 
-                    {external.length > 0 && (
+                    {parents.length > 0 && (
+                        <div className="batch-external">
+                            <div className="batch-section">Issues parentes, lancées à part</div>
+                            {parents.map((p) => {
+                                const deps = dependencies.filter((d) => d.issue === p.number && !(d.source === 'subissue'));
+                                return (
+                                    <div key={p.number} className="batch-external-row">
+                                        <span className="mono muted">#{p.number}</span>
+                                        <span className="batch-title">{p.title}</span>
+                                        <span className="muted">
+                                            {p.openSubIssues.length} sous-issue{p.openSubIssues.length > 1 ? 's' : ''} ouverte{p.openSubIssues.length > 1 ? 's' : ''}
+                                            {deps.length > 0 && ` · après ${deps.map((d) => `#${d.dependsOn}`).join(', ')}`}
+                                        </span>
+                                        {onOpenParent && (
+                                            <button className="small" onClick={() => onOpenParent(p.number, p.openSubIssues)} title="Ouvre le lot de ses sous-issues à la place de celui-ci">
+                                                Implémenter ses sous-issues
+                                            </button>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                            <div className="muted batch-note">
+                                Ses sous-issues reprennent ses dépendances quand tu les lances.
+                                {links.length > 0 && ` Au lancement, ${links.map((d) => `#${d.issue} bloquée par #${d.dependsOn}`).join(', ')} ${links.length > 1 ? 'seront écrites' : 'sera écrite'} sur GitHub pour ne pas se perdre.`}
+                            </div>
+                        </div>
+                    )}
+
+                    {existing.length > 0 && (
+                        <div className="batch-external">
+                            <div className="batch-section">Déjà une branche</div>
+                            {existing.map((e) => (
+                                <div key={e.number} className="batch-external-row existing-row">
+                                    <span className="mono muted">#{e.number}</span>
+                                    <span className="batch-title">
+                                        {titles.get(e.number) ?? ''}
+                                        <br />
+                                        <ExistingBranchInfo branch={e.branch} />
+                                    </span>
+                                    <label className="muted check" title="Relance une session d'implémentation sur cette branche, qui part du travail déjà fait">
+                                        <input
+                                            type="checkbox"
+                                            checked={resume.has(e.number)}
+                                            onChange={(event) =>
+                                                setResume((current) => {
+                                                    const next = new Set(current);
+                                                    if (event.target.checked) next.add(e.number);
+                                                    else next.delete(e.number);
+                                                    return next;
+                                                })
+                                            }
+                                        />{' '}
+                                        reprendre
+                                    </label>
+                                    <button className="small" onClick={() => void openBranchChat(repoId, e.number).then(onClose, () => undefined)} title="Onglet dans son worktree pour faire le point, sans rien relancer">
+                                        Ouvrir un chat
+                                    </button>
+                                </div>
+                            ))}
+                            <div className="muted batch-note">Écartées du lot : du travail existe déjà. Ce qui en dépend s'empile sur leur PR si elle est ouverte, sinon attend.</div>
+                        </div>
+                    )}
+
+                    {external.filter((e) => !numbers.includes(e.number)).length > 0 && (
                         <div className="batch-external">
                             <div className="batch-section">Hors sélection</div>
-                            {external.map((e) => (
+                            {external.filter((e) => !numbers.includes(e.number)).map((e) => (
                                 <div key={e.number} className="batch-external-row">
                                     <span className="mono muted">#{e.number}</span>
                                     <span className="batch-title">
                                         {e.kind === 'pr' ? 'PR · ' : ''}
                                         {e.title}
                                     </span>
-                                    <span className="muted">{e.openPr ? `PR #${e.openPr.number} ouverte : les dépendantes s'empilent dessus` : 'ouverte, sans PR : les dépendantes attendront'}</span>
-                                    {e.kind === 'issue' && !e.openPr && (
+                                    <span className="muted">
+                                        {e.openPr
+                                            ? `PR #${e.openPr.number} ouverte : les dépendantes s'empilent dessus`
+                                            : e.openSubIssues
+                                              ? `issue parente (${e.openSubIssues} sous-issue${e.openSubIssues > 1 ? 's' : ''} ouverte${e.openSubIssues > 1 ? 's' : ''}) : les dépendantes attendent qu'elle soit fermée`
+                                              : 'ouverte, sans PR : les dépendantes attendront'}
+                                    </span>
+                                    {e.kind === 'issue' && !e.openPr && !e.openSubIssues && !parentNumbers.has(e.number) && (
                                         <button className="small" onClick={() => onAdd(e.number)} title="L'implémenter dans ce lot">
                                             Ajouter
                                         </button>
@@ -262,8 +362,8 @@ export function BatchDialog({ repoId, numbers, onAdd, onClose }: Props): ReactEl
                     <input type="checkbox" checked={planMode} onChange={(e) => setPlanMode(e.target.checked)} /> plan d'abord
                 </label>
                 <button onClick={onClose}>Annuler</button>
-                <button className="primary" disabled={!analysis || loading !== null || cycle !== null} onClick={() => void launch()}>
-                    Lancer ({startNow} tout de suite{numbers.length - startNow > 0 ? `, ${numbers.length - startNow} ensuite` : ''})
+                <button className="primary" disabled={!analysis || loading !== null || cycle !== null || launchable.length === 0} onClick={() => void launch()}>
+                    Lancer ({startNow} tout de suite{launchable.length - startNow > 0 ? `, ${launchable.length - startNow} ensuite` : ''})
                 </button>
             </div>
         </Modal>

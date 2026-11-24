@@ -35,6 +35,8 @@ export type Item =
     | ToolItem
     | { kind: 'init'; key: string; model: string; version: string; commands: number; skills: number; mcp: string[] }
     | { kind: 'compact'; key: string; preTokens: number; postTokens: number | undefined }
+    /** Tâche lancée en arrière-plan (`started`), ou terminée avec son résumé. */
+    | { kind: 'task'; key: string; status: 'started' | 'completed' | 'failed' | 'stopped'; description: string; summary: string }
     | { kind: 'result'; key: string; subtype: string; durationMs: number; costUsd: number; numTurns: number; errors: string[] };
 
 function resultText(content: unknown): string {
@@ -74,6 +76,8 @@ export function buildItems(messages: SDKMessage[]): Item[] {
     const tools = new Map<string, ToolItem>();
     const target = (parent: string | null | undefined): Item[] => (parent && tools.get(parent)?.children) || items;
     let initShown = false;
+    // Description des tâches, pour nommer leur fin (la notification ne la redonne pas).
+    const taskNames = new Map<string, string>();
     // `/mcp` tapé dans le terminal ou VS Code laisse dans le transcript son écho puis sa sortie :
     // ni l'un ni l'autre n'est affiché (l'état MCP s'ouvre dans une fenêtre, hors du fil).
     let hideNextLocal = false;
@@ -145,6 +149,14 @@ export function buildItems(messages: SDKMessage[]): Item[] {
                         skills: message.skills.length,
                         mcp: message.mcp_servers.map((s) => `${s.name} (${s.status})`),
                     });
+                } else if (message.subtype === 'task_started') {
+                    if (message.ambient || message.skip_transcript) break;
+                    taskNames.set(message.task_id, message.description);
+                    // Une tâche au premier plan est déjà visible dans le fil (son appel d'outil).
+                    if (message.is_backgrounded) items.push({ kind: 'task', key, status: 'started', description: message.description, summary: '' });
+                } else if (message.subtype === 'task_notification') {
+                    if (message.ambient || message.skip_transcript) break;
+                    items.push({ kind: 'task', key, status: message.status, description: taskNames.get(message.task_id) ?? 'tâche', summary: message.summary });
                 } else if (message.subtype === 'compact_boundary') {
                     items.push({ kind: 'compact', key, preTokens: message.compact_metadata.pre_tokens, postTokens: message.compact_metadata.post_tokens });
                 }

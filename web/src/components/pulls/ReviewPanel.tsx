@@ -5,7 +5,8 @@ import { reviewKey, useStore } from '../../store';
 import { DiffBrowser, DiffSummary, type Anchor } from '../DiffView';
 import { Markdown } from '../Markdown';
 import { timeAgo } from '../issues/IssueBody';
-import { isCommentable, parseDiff } from '../../../../shared/diff';
+import { send } from '../../ws';
+import { isCommentable, parseDiff, type DiffFile } from '../../../../shared/diff';
 import type { DraftLabel, ReviewDraft, ReviewEvent, ReviewState } from '../../../../shared/protocol';
 
 const LABELS: DraftLabel[] = ['bloquant', 'à corriger', 'détail', 'question'];
@@ -15,6 +16,42 @@ const EVENTS: Array<{ value: ReviewEvent; label: string }> = [
     { value: 'APPROVE', label: 'Approuver' },
     { value: 'REQUEST_CHANGES', label: 'Demander des changements' },
 ];
+
+/** Lignes du diff que vise un brouillon (avec leur préfixe `+`/`-`/` `), pour le citer dans le chat. */
+function codeOf(files: DiffFile[], draft: ReviewDraft): string {
+    const file = files.find((f) => f.path === draft.path);
+    if (!file) return '';
+    const from = draft.startLine ?? draft.line;
+    const lines = file.hunks
+        .flatMap((h) => h.lines)
+        .filter((l) => {
+            const n = draft.side === 'LEFT' ? l.oldLine : l.newLine;
+            return n !== null && n >= from && n <= draft.line;
+        });
+    return lines
+        .slice(0, 40)
+        .map((l) => `${l.kind === 'add' ? '+' : l.kind === 'del' ? '-' : ' '}${l.text}`)
+        .join('\n');
+}
+
+/** Message envoyé au chat pour discuter d'un brouillon : où il est, le code, le commentaire, la question. */
+export function discussDraftPrompt(draft: ReviewDraft, code: string, question: string): string {
+    const where = `\`${draft.path}\` ${draft.side === 'LEFT' ? 'ancienne ' : ''}L${draft.startLine !== null ? `${draft.startLine}-` : ''}${draft.line}`;
+    return [
+        `À propos du brouillon de commentaire de review sur ${where}${draft.label ? ` (${draft.label})` : ''}, écrit par ${draft.source === 'claude' ? 'toi' : 'moi'} :`,
+        '',
+        ...(code ? ['```diff', code, '```', ''] : []),
+        draft.body
+            .trim()
+            .split('\n')
+            .map((line) => `> ${line}`)
+            .join('\n'),
+        '',
+        question.trim(),
+        '',
+        "Si on doit le changer, propose le nouveau texte du commentaire tel qu'il serait publié ; je mettrai le brouillon à jour.",
+    ].join('\n');
+}
 
 const labelClass = (label: DraftLabel | null): string => (label ? `draft-label label-${LABELS.indexOf(label)}` : 'draft-label');
 
@@ -31,9 +68,29 @@ function LabelSelect({ value, onChange }: { value: DraftLabel | null; onChange: 
     );
 }
 
-function DraftCard({ draft, outside, onSave, onDelete }: { draft: ReviewDraft; outside: boolean; onSave: (patch: Partial<Pick<ReviewDraft, 'body' | 'label'>>) => Promise<void>; onDelete: () => Promise<void> }): ReactElement {
+interface DraftCardProps {
+    draft: ReviewDraft;
+    outside: boolean;
+    onSave: (patch: Partial<Pick<ReviewDraft, 'body' | 'label'>>) => Promise<void>;
+    onDelete: () => Promise<void>;
+    /** Envoie une question sur ce brouillon au chat de l'onglet (absent : pas de chat). */
+    onDiscuss?: ((question: string) => void) | undefined;
+}
+
+function DraftCard({ draft, outside, onSave, onDelete, onDiscuss }: DraftCardProps): ReactElement {
     const [editing, setEditing] = useState(false);
     const [text, setText] = useState(draft.body);
+    const [discussing, setDiscussing] = useState(false);
+    const [question, setQuestion] = useState('');
+    const [sent, setSent] = useState(false);
+
+    const discuss = (): void => {
+        if (!onDiscuss || !question.trim()) return;
+        onDiscuss(question);
+        setQuestion('');
+        setDiscussing(false);
+        setSent(true);
+    };
     useEffect(() => setText(draft.body), [draft.body]);
 
     const save = async (): Promise<void> => {
@@ -51,6 +108,12 @@ function DraftCard({ draft, outside, onSave, onDelete }: { draft: ReviewDraft; o
                 </span>
                 {outside && <span className="warn">hors diff : ira dans le corps de la review</span>}
                 <span className="spacer" />
+                {sent && !discussing && <span className="muted">envoyé au chat ✓</span>}
+                {onDiscuss && !discussing && (
+                    <button className="small" onClick={() => setDiscussing(true)} title="Poser une question sur ce commentaire dans le chat de la PR">
+                        discuter
+                    </button>
+                )}
                 <LabelSelect value={draft.label} onChange={(label) => void onSave({ label })} />
                 {!editing && (
                     <button className="small" onClick={() => setEditing(true)}>
@@ -82,6 +145,32 @@ function DraftCard({ draft, outside, onSave, onDelete }: { draft: ReviewDraft; o
             ) : (
                 <div className="draft-body" onDoubleClick={() => setEditing(true)}>
                     {draft.body.trim() ? <Markdown text={draft.body} /> : <span className="muted">(vide)</span>}
+                </div>
+            )}
+            {discussing && (
+                <div className="draft-discuss">
+                    <textarea
+                        autoFocus
+                        rows={2}
+                        value={question}
+                        placeholder="Ta question ou ta remarque sur ce commentaire (Entrée pour envoyer au chat)"
+                        onChange={(e) => setQuestion(e.target.value)}
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                                e.preventDefault();
+                                discuss();
+                            }
+                            if (e.key === 'Escape') setDiscussing(false);
+                        }}
+                    />
+                    <div className="draft-actions">
+                        <button className="small primary" disabled={!question.trim()} onClick={discuss} title="Envoie au chat le commentaire, les lignes de code visées et ta question">
+                            Envoyer au chat
+                        </button>
+                        <button className="small" onClick={() => setDiscussing(false)}>
+                            Annuler
+                        </button>
+                    </div>
                 </div>
             )}
         </div>
@@ -181,6 +270,7 @@ export function ReviewPanel({ repoId, prNumber, runId }: { repoId: number; prNum
             outside={isOutside}
             onSave={(change) => act(() => api.patchDraft(repoId, prNumber, draft.id, change))}
             onDelete={() => act(() => api.deleteDraft(repoId, prNumber, draft.id))}
+            onDiscuss={runId === undefined ? undefined : (question) => send({ type: 'prompt', runId, text: discussDraftPrompt(draft, codeOf(files, draft), question) })}
         />
     );
     const renderNew = (anchor: Anchor): ReactElement => (

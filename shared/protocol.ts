@@ -442,6 +442,26 @@ export interface DependencyStatus {
     openPr: { number: number; branch: string } | null;
     /** Prête : fermée/mergée, ou avec une PR ouverte. Sinon, ses dépendantes attendent. */
     ready: boolean;
+    /** Issue parente : nombre de sous-issues encore ouvertes (elle n'aura jamais de PR à elle). */
+    openSubIssues?: number;
+}
+
+/**
+ * Branche où une issue a déjà du travail (commits, PR, modifications locales) : on le signale au
+ * lieu de relancer l'implémentation à l'aveugle.
+ */
+export interface ExistingBranch {
+    branch: string;
+    /** D'où elle vient : worktree déjà sorti, branche liée sur GitHub, PR ouverte, branche distante au numéro de l'issue. */
+    source: 'worktree' | 'linked' | 'pr' | 'remote';
+    worktree: string | null;
+    pr: PullRequestRef | null;
+    /** Commits par rapport à la base (`null` si illisible). */
+    commits: number | null;
+    /** Dernier commit : sujet et date relative. */
+    lastCommit: string | null;
+    /** Fichiers modifiés non commités dans le worktree. */
+    uncommitted: number;
 }
 
 /** Résultat de l'analyse d'une sélection d'issues. */
@@ -452,6 +472,15 @@ export interface BatchAnalysis {
     external: DependencyStatus[];
     /** Problème non bloquant (relations GitHub illisibles, analyse Claude en échec…). */
     warnings: string[];
+    /**
+     * Issues sélectionnées qui sont elles-mêmes parentes (sous-issues ouvertes) : écartées du lot, à
+     * lancer à part. Leurs dépendances restent dans `dependencies`.
+     */
+    parents: Array<{ number: number; title: string; openSubIssues: number[] }>;
+    /** Implémentations en parallèle : limite et places occupées. */
+    slots: { max: number; busy: number };
+    /** Issues qui ont déjà une branche avec du travail : écartées par défaut. */
+    existing: Array<{ number: number; branch: ExistingBranch }>;
 }
 
 /** Une issue d'un lot qui attend ses dépendances (ou dont le lancement a échoué). */
@@ -559,6 +588,43 @@ export interface Quote {
     source?: string;
     /** Annotation : ce que tu en dis. */
     comment?: string;
+}
+
+/** Lien GitHub d'une issue ou d'une PR, pour l'en-tête d'un onglet. */
+export interface GithubLink {
+    kind: 'issue' | 'pr';
+    number: number;
+    title: string;
+    url: string;
+    state: 'OPEN' | 'CLOSED' | 'MERGED';
+    isDraft?: boolean;
+}
+
+/** Workflow GitHub Actions déclenché par le merge de la branche de l'onglet dans develop ou master. */
+export interface WorkflowLink {
+    id: number;
+    name: string;
+    url: string;
+    /** Branche où le merge a eu lieu (`develop`, `master`). */
+    target: string;
+    status: string;
+    /** `success`, `failure`, `cancelled`… une fois terminé. */
+    conclusion: string | null;
+    createdAt: string;
+}
+
+export interface RunLinks {
+    links: GithubLink[];
+    workflows: WorkflowLink[];
+}
+
+/** Page écrite par une session dans son dossier d'artifacts, servie par l'app. */
+export interface ArtifactFile {
+    name: string;
+    /** Adresse où l'app la sert (`/artifacts/<onglet>/<nom>`). */
+    url: string;
+    size: number;
+    updatedAt: string;
 }
 
 export type ServerMessage =

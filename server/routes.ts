@@ -2,12 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { basename, resolve } from 'node:path';
 import { cancelItem, forceStart, startBatch, type BatchRequest } from './batch.js';
 import { archiveRun, deleteDraft, deleteRepo, getRepo, getRun, insertDraft, insertRun, listBatchItems, listRepos, listRuns, listSpecRuns, saveReviewRow, updateDraft, updateRepo, updateRun } from './db.js';
+import { ARTIFACT_CSP, listArtifacts, readArtifact } from './artifacts.js';
+import { runLinks } from './links.js';
 import { brunoState, switchBruno } from './bruno.js';
 import { listCleanup, startCleanup } from './cleanup.js';
 import { analyzeDependencies } from './dependencies.js';
 import { diffAgainstBase } from './git.js';
 import { listIssues, pullRequestForBranch } from './github.js';
-import { issueBranch, issueDetail, mergeBaseInto, mergeIntegration, pullBranch, resumeIssueSession, runInstall, runMergeSource, runProfileCommand, runBase, runProjects, runShell, runWorktreeInfo, startImplement, startIssueChat, startMergeResolution } from './implement.js';
+import { existingBranchForIssue, issueBranch, issueDetail, startBranchChat, mergeBaseInto, mergeIntegration, pullBranch, resumeIssueSession, runInstall, runMergeSource, runProfileCommand, runBase, runProjects, runShell, runWorktreeInfo, startImplement, startIssueChat, startMergeResolution } from './implement.js';
 import { jobs } from './jobs.js';
 import { openIn } from './open.js';
 import { openPr, prDetail, sendReviewComments, startReview } from './pr.js';
@@ -180,6 +182,17 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         return repo && startImplement(repo, Number(request.params.number), { planMode: Boolean(request.body?.planMode), opId: request.body?.opId });
     });
 
+    // Branche déjà travaillée : signalée avant d'implémenter, avec un chat pour en discuter.
+    app.get<{ Params: { id: string; number: string } }>('/api/repos/:id/issues/:number/existing-branch', async (request, reply) => {
+        const repo = repoOr404(request.params.id, reply);
+        return repo && { branch: await existingBranchForIssue(repo, Number(request.params.number)) };
+    });
+
+    app.post<{ Params: { id: string; number: string }; Body: { opId?: string } }>('/api/repos/:id/issues/:number/branch-chat', async (request, reply) => {
+        const repo = repoOr404(request.params.id, reply);
+        return repo && startBranchChat(repo, Number(request.params.number), request.body?.opId);
+    });
+
     // Plusieurs issues : dépendances, puis lancement en lot (attente et stacked PR pour les dépendantes).
     app.post<{ Params: { id: string }; Body: { issues: number[]; claude?: boolean } }>('/api/repos/:id/issues/dependencies', async (request, reply) => {
         const repo = repoOr404(request.params.id, reply);
@@ -236,6 +249,26 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     app.delete<{ Params: { id: string; number: string } }>('/api/repos/:id/batch/:number', async (request) => {
         cancelItem(Number(request.params.id), Number(request.params.number));
         return { ok: true };
+    });
+
+    // ---------------------------------------------------------------------------------------
+    // Artifacts : pages écrites par les sessions
+    // ---------------------------------------------------------------------------------------
+
+    app.get<{ Params: { id: string } }>('/api/runs/:id/links', async (request) => {
+        const run = getRun(Number(request.params.id));
+        const repo = run?.repoId != null ? getRepo(run.repoId) : undefined;
+        // Pas de dépôt GitHub (spec dans un dossier, chat libre) : pas de liens, sans erreur.
+        if (!run || !repo?.owner || (run.issueNumber === null && run.prNumber === null && !run.branch)) return { links: [], workflows: [] };
+        return runLinks(repo, run);
+    });
+
+    app.get<{ Params: { id: string } }>('/api/runs/:id/artifacts', async (request) => listArtifacts(Number(request.params.id)));
+
+    app.get<{ Params: { runId: string; '*': string } }>('/artifacts/:runId/*', async (request, reply) => {
+        const file = await readArtifact(Number(request.params.runId), request.params['*'] ?? '');
+        if (!file) return reply.code(404).type('text/plain; charset=utf-8').send('page introuvable');
+        return reply.header('content-security-policy', ARTIFACT_CSP).header('cache-control', 'no-store').type(file.type).send(file.body);
     });
 
     // ---------------------------------------------------------------------------------------

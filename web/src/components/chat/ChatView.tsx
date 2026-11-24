@@ -1,11 +1,14 @@
 import type { ReactElement, ReactNode } from 'react';
 import { useCallback } from 'react';
+import { ArtifactsBar } from './ArtifactsBar';
 import { AskCard } from './AskCard';
 import { Composer } from './Composer';
+import { GithubLinks } from './GithubLinks';
 import { McpDialog } from './McpCard';
 import { MessageList } from './MessageList';
 import { QuoteSelection, QuoteStack, withQuotes } from './QuoteSelection';
 import { StatusBar } from './StatusBar';
+import { TasksStrip } from './TasksStrip';
 import { useStore } from '../../store';
 import { send } from '../../ws';
 import type { Quote, Run } from '../../../../shared/protocol';
@@ -42,8 +45,10 @@ export function ChatView({ run, toolbar, panel, subtitle, wide }: Props): ReactE
                         {repo?.owner ? `${repo.owner}/${repo.name}` : ''} {run.cwd.replace(/^\/Users\/[^/]+/, '~')}
                     </span>
                     {subtitle}
+                    <GithubLinks run={run} />
                 </div>
                 {toolbar && <div className="toolbar">{toolbar}</div>}
+                <ArtifactsBar run={run} />
             </div>
             <div className="chat-body">
                 <div className="chat-main">
@@ -53,8 +58,10 @@ export function ChatView({ run, toolbar, panel, subtitle, wide }: Props): ReactE
                     {view?.asks.map((ask) => (
                         <AskCard key={ask.id} ask={ask} />
                     ))}
+                    <TasksStrip run={run} />
                     <QuoteStack runId={run.id} />
                     <Composer
+                        runId={run.id}
                         commands={view?.commands ?? []}
                         running={run.state === 'running'}
                         draft={draft}

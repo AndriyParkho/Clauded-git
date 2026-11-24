@@ -9,6 +9,7 @@ import { resetRunStates } from './db.js';
 import { jobs } from './jobs.js';
 import { reviewWatcher } from './review.js';
 import { registerRoutes } from './routes.js';
+import { guardOrigin } from './security.js';
 import { sessions } from './sessions/manager.js';
 import { specWatcher } from './spec.js';
 import { registerWebSocket, wireSessionEvents } from './ws.js';
@@ -17,6 +18,7 @@ const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'warn' } });
 
 resetRunStates();
 wireSessionEvents();
+guardOrigin(app);
 
 // Les prompts peuvent contenir des images en base64 : plafond large.
 await app.register(fastifyWebsocket, { options: { maxPayload: 64 * 1024 * 1024 } });

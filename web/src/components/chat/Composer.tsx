@@ -1,10 +1,12 @@
 import type { ReactElement } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { imageFiles, toAttachment } from '../../images';
-import { useStore } from '../../store';
+import { EMPTY_INPUT, useStore } from '../../store';
 import type { ImageAttachment, SlashCommandInfo } from '../../../../shared/protocol';
 
 interface Props {
+    /** Onglet du chat : la saisie en cours lui appartient et survit au changement d'onglet. */
+    runId: number;
     commands: SlashCommandInfo[];
     running: boolean;
     /** Texte à placer dans la saisie (une fois), par exemple le contexte d'une issue. */
@@ -16,9 +18,12 @@ interface Props {
     onStop: () => void;
 }
 
-export function Composer({ commands, running, draft, onDraftConsumed, hasQuotes, onSend, onStop }: Props): ReactElement {
-    const [text, setText] = useState('');
-    const [images, setImages] = useState<ImageAttachment[]>([]);
+export function Composer({ runId, commands, running, draft, onDraftConsumed, hasQuotes, onSend, onStop }: Props): ReactElement {
+    const { text, images } = useStore((s) => s.inputs[runId] ?? EMPTY_INPUT);
+    const setInput = useStore((s) => s.setInput);
+    const setText = (next: string): void => setInput(runId, () => ({ text: next }));
+    const setImages = (next: ImageAttachment[] | ((current: ImageAttachment[]) => ImageAttachment[])): void =>
+        setInput(runId, (input) => ({ images: typeof next === 'function' ? next(input.images) : next }));
     const [dragging, setDragging] = useState(false);
     const [cursor, setCursor] = useState(0);
     const area = useRef<HTMLTextAreaElement>(null);

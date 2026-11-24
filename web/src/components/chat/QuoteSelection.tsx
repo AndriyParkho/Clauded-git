@@ -5,9 +5,15 @@ import type { Quote } from '../../../../shared/protocol';
 
 interface Picked {
     text: string;
-    top: number;
+    range: Range;
+    /** Position de la fenêtre : sous la sélection, ou au-dessus quand la place manque en bas. */
+    top?: number;
+    bottom?: number;
     left: number;
 }
+
+const POPOVER_WIDTH = 380;
+const POPOVER_HEIGHT = 150;
 
 /** Texte sélectionné dans `container`, nettoyé ; `undefined` si la sélection est vide ou ailleurs. */
 function selectionIn(container: HTMLElement): Picked | undefined {
@@ -21,102 +27,129 @@ function selectionIn(container: HTMLElement): Picked | undefined {
         .trim();
     if (!text) return undefined;
     const rect = range.getBoundingClientRect();
-    return { text, top: rect.bottom + 6, left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)) };
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - POPOVER_WIDTH - 8));
+    const below = rect.bottom + 8 + POPOVER_HEIGHT < window.innerHeight;
+    return { text, range: range.cloneRange(), left, ...(below ? { top: rect.bottom + 8 } : { bottom: window.innerHeight - rect.top + 8 }) };
+}
+
+/**
+ * Garde le passage surligné pendant qu'on tape la réponse (le focus dans le champ efface la
+ * sélection du navigateur). API CSS Custom Highlight, ignorée si le navigateur ne l'a pas.
+ */
+function highlight(range: Range | undefined): void {
+    const registry = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
+    const Ctor = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+    if (!registry || !Ctor) return;
+    if (range) registry.set('quote-reply', new Ctor(range));
+    else registry.delete('quote-reply');
 }
 
 interface Props {
     runId: number;
     /** Origine affichée avec la citation (`SPEC.md`) ; absent pour le fil du chat. */
     source?: string;
-    /** Propose « Commenter… » en plus de « Citer » (annotations de la spec). */
-    comment?: boolean;
+    /** Texte du champ de réponse. */
+    placeholder?: string;
     className?: string;
     children: ReactNode;
 }
 
 /**
- * Sélectionner un passage dans la zone fait apparaître « Citer » (et « Commenter… ») : le passage
- * rejoint la pile au-dessus de la saisie et part avec le message suivant.
+ * Comme dans l'app Claude : sélectionner un passage ouvre une petite fenêtre avec le passage cité et
+ * un champ de réponse. Entrée (ou « + ») ajoute la citation, avec ce qui est tapé, à la pile au-dessus
+ * de la saisie ; elle part avec le prochain message, et le focus revient dans la saisie pour l'écrire.
  */
-export function QuoteSelection({ runId, source, comment, className, children }: Props): ReactElement {
+export function QuoteSelection({ runId, source, placeholder = 'Répondre à Claude', className, children }: Props): ReactElement {
     const addQuote = useStore((s) => s.addQuote);
     const container = useRef<HTMLDivElement>(null);
+    const popover = useRef<HTMLDivElement>(null);
+    const field = useRef<HTMLTextAreaElement>(null);
     const [picked, setPicked] = useState<Picked | undefined>();
-    const [writing, setWriting] = useState(false);
-    const [note, setNote] = useState('');
-
-    useEffect(() => {
-        if (!picked || writing) return;
-        // La sélection disparaît (clic ailleurs) : le bouton aussi.
-        const onChange = (): void => {
-            if (!container.current || !selectionIn(container.current)) setPicked(undefined);
-        };
-        document.addEventListener('selectionchange', onChange);
-        return () => document.removeEventListener('selectionchange', onChange);
-    }, [picked, writing]);
-
-    const onMouseUp = (): void => {
-        if (writing) return;
-        // Après le mouseup, la sélection est à jour.
-        setTimeout(() => setPicked(container.current ? selectionIn(container.current) : undefined), 0);
-    };
+    const [reply, setReply] = useState('');
 
     const close = (): void => {
         setPicked(undefined);
-        setWriting(false);
-        setNote('');
+        setReply('');
+        highlight(undefined);
     };
 
-    const add = (withComment?: string): void => {
+    useEffect(() => {
         if (!picked) return;
-        const quote: Omit<Quote, 'id'> = { text: picked.text, ...(source ? { source } : {}), ...(withComment?.trim() ? { comment: withComment.trim() } : {}) };
-        addQuote(runId, quote);
+        highlight(picked.range);
+        // Un clic ailleurs ferme la fenêtre (un clic dans la zone en ouvre une nouvelle au relâchement).
+        const onDown = (event: MouseEvent): void => {
+            if (!popover.current?.contains(event.target as Node)) close();
+        };
+        // Le champ ne prend pas le focus d'office : la sélection reste, ⌘C la copie. La première lettre
+        // tapée y bascule (et s'y écrit) ; Échap ferme.
+        const onKey = (event: KeyboardEvent): void => {
+            if (document.activeElement === field.current) return;
+            if (event.key === 'Escape') close();
+            else if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) field.current?.focus();
+        };
+        document.addEventListener('mousedown', onDown);
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('mousedown', onDown);
+            document.removeEventListener('keydown', onKey);
+        };
+    }, [picked]);
+
+    useEffect(() => () => highlight(undefined), []);
+
+    const onMouseUp = (): void => {
+        // Après le mouseup, la sélection est à jour.
+        setTimeout(() => {
+            const next = container.current ? selectionIn(container.current) : undefined;
+            if (next) {
+                setReply('');
+                setPicked(next);
+            }
+        }, 0);
+    };
+
+    const quote = (comment: string): Omit<Quote, 'id'> => ({ text: picked?.text ?? '', ...(source ? { source } : {}), ...(comment.trim() ? { comment: comment.trim() } : {}) });
+
+    const keep = (): void => {
+        if (!picked) return;
+        addQuote(runId, quote(reply));
         window.getSelection()?.removeAllRanges();
         close();
+        // On continue dans la saisie du chat : la citation part avec le message qu'on y écrit.
+        setTimeout(() => document.querySelector<HTMLTextAreaElement>('.composer textarea')?.focus(), 0);
     };
 
     return (
         <div ref={container} className={className} onMouseUp={onMouseUp}>
             {children}
             {picked && (
-                <div className="quote-popover" style={{ top: picked.top, left: picked.left }} onMouseDown={(e) => !writing && e.preventDefault()}>
-                    {writing ? (
-                        <div className="quote-comment">
-                            <textarea
-                                autoFocus
-                                rows={3}
-                                value={note}
-                                placeholder="Ton commentaire sur ce passage (Entrée pour l'ajouter)"
-                                onChange={(e) => setNote(e.target.value)}
-                                onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && !e.shiftKey) {
-                                        e.preventDefault();
-                                        add(note);
-                                    }
-                                    if (e.key === 'Escape') close();
-                                }}
-                            />
-                            <div className="quote-comment-actions">
-                                <button className="small" onClick={close}>
-                                    Annuler
-                                </button>
-                                <button className="small primary" disabled={!note.trim()} onClick={() => add(note)}>
-                                    Ajouter
-                                </button>
-                            </div>
-                        </div>
-                    ) : (
-                        <>
-                            {comment && (
-                                <button className="small primary" onClick={() => setWriting(true)}>
-                                    Commenter…
-                                </button>
-                            )}
-                            <button className={`small ${comment ? '' : 'primary'}`} onClick={() => add()} title="Ajoute le passage au-dessus de la saisie ; il part avec ton prochain message">
-                                Citer
-                            </button>
-                        </>
-                    )}
+                <div ref={popover} className="quote-popover" style={{ left: picked.left, ...(picked.top !== undefined ? { top: picked.top } : { bottom: picked.bottom }) }}>
+                    <div className="quote-popover-text">{picked.text}</div>
+                    <div className="quote-popover-row">
+                        <textarea
+                            ref={field}
+                            rows={1}
+                            value={reply}
+                            placeholder={placeholder}
+                            onChange={(e) => setReply(e.target.value)}
+                            onCopy={(e) => {
+                                // ⌘C dans le champ sans rien y sélectionner : copie le passage cité.
+                                if (e.currentTarget.selectionStart !== e.currentTarget.selectionEnd || !picked) return;
+                                e.preventDefault();
+                                e.clipboardData.setData('text/plain', picked.text);
+                            }}
+                            onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                    e.preventDefault();
+                                    keep();
+                                }
+                                if (e.key === 'Escape') close();
+                            }}
+                        />
+                        <button className="quote-keep" onClick={keep} title="Ajouter la citation (et ce que tu as tapé) au-dessus de la saisie, pour l'envoyer avec ton prochain message (Entrée)">
+                            +
+                        </button>
+                    </div>
                 </div>
             )}
         </div>

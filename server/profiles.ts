@@ -25,6 +25,11 @@ export interface Profile {
     commands: Record<string, string>;
     /** Skill de review des PR (`core-pr-review`), ou null. */
     reviewSkill: string | null;
+    /**
+     * Skill que la session d'implémentation lance sur sa propre PR avant de rendre la main
+     * (`code-review:code-review`), ou null pour s'en passer.
+     */
+    selfReviewSkill: string | null;
     /** Consignes ajoutées au prompt d'implémentation. */
     instructions: string;
     /**
@@ -86,6 +91,7 @@ async function guessProfile(repo: Repo): Promise<Profile> {
         copyFiles: [],
         commands,
         reviewSkill: null,
+        selfReviewSkill: 'code-review:code-review',
         instructions: '',
         // Une collection Bruno dans le dépôt : la fonction `bru-use` du .zshrc la bascule.
         bruno: (await stat(join(repo.path, 'bruno')).then((s) => s.isDirectory()).catch(() => false)) ? 'bru-use {path}' : null,

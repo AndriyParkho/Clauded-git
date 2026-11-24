@@ -5,6 +5,7 @@ import type {
     AskRequest,
     BatchItem,
     BrunoState,
+    ImageAttachment,
     IssueFilter,
     IssueState,
     JobInfo,
@@ -26,6 +27,23 @@ import type {
     UsageInfo,
 } from '../../shared/protocol';
 
+/** Sous-agent ou commande que Claude a lancé en arrière-plan : il tourne après la fin du tour. */
+export interface BackgroundTask {
+    id: string;
+    description: string;
+    /** `local_agent` (sous-agent), `local_bash` (commande), `local_workflow`… */
+    type: string;
+    /** Type de sous-agent (`Explore`, `general-purpose`…). */
+    agent?: string;
+    /** En arrière-plan (sinon le tour attend la tâche, déjà visible dans le fil). */
+    background: boolean;
+    startedAt: number;
+    toolUses: number;
+    lastTool?: string;
+    /** Résumé de progression, quand le CLI en donne un. */
+    summary?: string;
+}
+
 /** Ce que l'UI garde pour un onglet, en plus de la ligne `Run` venue du serveur. */
 export interface RunView {
     messages: SDKMessage[];
@@ -41,10 +59,19 @@ export interface RunView {
     permissions: PermissionEvent[];
     jobs: JobInfo[];
     usage?: UsageInfo;
+    /** Tâches lancées par Claude et pas encore terminées, par id. */
+    tasks: Record<string, BackgroundTask>;
     /** Dernier résultat de `/mcp`, affiché dans une fenêtre au-dessus du chat (jamais dans le fil). */
     mcp?: McpStatus;
     loaded: boolean;
 }
+
+export interface ComposerInput {
+    text: string;
+    images: ImageAttachment[];
+}
+
+export const EMPTY_INPUT: ComposerInput = { text: '', images: [] };
 
 export interface Notice {
     id: number;
@@ -112,6 +139,9 @@ interface State {
     specPlans: Record<number, SpecPlan>;
     /** Passages cités en attente, envoyés avec le prochain message de l'onglet. */
     quotes: Record<number, Quote[]>;
+    /** Saisie en cours par onglet (texte et images), gardée quand on change d'onglet. */
+    inputs: Record<number, ComposerInput>;
+    setInput(runId: number, update: (input: ComposerInput) => Partial<ComposerInput>): void;
 
     apply(message: ServerMessage): void;
     setPulls(patch: Partial<PullsState>): void;
@@ -135,7 +165,55 @@ interface State {
     clearQuotes(runId: number): void;
 }
 
-const emptyView = (): RunView => ({ messages: [], seen: new Set(), partial: '', partialTool: null, asks: [], commands: [], models: [], permissions: [], jobs: [], loaded: false });
+const emptyView = (): RunView => ({ messages: [], seen: new Set(), partial: '', partialTool: null, asks: [], commands: [], models: [], permissions: [], jobs: [], tasks: {}, loaded: false });
+
+/** Suit les tâches (sous-agents, commandes) d'après les messages `task_*` du SDK. */
+function withTask(view: RunView, message: SDKMessage): RunView {
+    if (message.type !== 'system') return view;
+    const tasks = view.tasks;
+    switch (message.subtype) {
+        case 'task_started': {
+            // Tâches de fond techniques (surveillances…) : pas de l'activité.
+            if (message.ambient || message.skip_transcript) return view;
+            const task: BackgroundTask = {
+                id: message.task_id,
+                description: message.description,
+                type: message.task_type ?? 'local_agent',
+                background: message.is_backgrounded ?? false,
+                startedAt: Date.now(),
+                toolUses: 0,
+                ...(message.subagent_type ? { agent: message.subagent_type } : {}),
+            };
+            return { ...view, tasks: { ...tasks, [task.id]: task } };
+        }
+        case 'task_progress': {
+            const task = tasks[message.task_id];
+            if (!task) return view;
+            const next: BackgroundTask = { ...task, toolUses: message.usage.tool_uses, ...(message.last_tool_name ? { lastTool: message.last_tool_name } : {}), ...(message.summary ? { summary: message.summary } : {}) };
+            return { ...view, tasks: { ...tasks, [task.id]: next } };
+        }
+        case 'task_updated': {
+            const task = tasks[message.task_id];
+            if (!task) return view;
+            const status = message.patch.status;
+            if (status === 'completed' || status === 'failed' || status === 'killed') {
+                const rest = { ...tasks };
+                delete rest[task.id];
+                return { ...view, tasks: rest };
+            }
+            if (message.patch.is_backgrounded !== undefined) return { ...view, tasks: { ...tasks, [task.id]: { ...task, background: message.patch.is_backgrounded } } };
+            return view;
+        }
+        case 'task_notification': {
+            if (!tasks[message.task_id]) return view;
+            const rest = { ...tasks };
+            delete rest[message.task_id];
+            return { ...view, tasks: rest };
+        }
+        default:
+            return view;
+    }
+}
 
 let noticeId = 0;
 
@@ -165,6 +243,17 @@ export const useStore = create<State>((set, get) => ({
     specs: {},
     specPlans: {},
     quotes: {},
+    inputs: {},
+    setInput: (runId, update) =>
+        set((state) => {
+            const current = state.inputs[runId] ?? EMPTY_INPUT;
+            const next = { ...current, ...update(current) };
+            const inputs = { ...state.inputs };
+            // Saisie vide : rien à garder.
+            if (!next.text && next.images.length === 0) delete inputs[runId];
+            else inputs[runId] = next;
+            return { inputs };
+        }),
     addQuote: (runId, quote) => set((state) => ({ quotes: { ...state.quotes, [runId]: [...(state.quotes[runId] ?? []), { ...quote, id: crypto.randomUUID() }] } })),
     removeQuote: (runId, id) => set((state) => ({ quotes: { ...state.quotes, [runId]: (state.quotes[runId] ?? []).filter((q) => q.id !== id) } })),
     clearQuotes: (runId) =>
@@ -327,7 +416,7 @@ function withMessage(view: RunView, message: SDKMessage): RunView {
     if (uuid && view.seen.has(uuid)) return view;
     const seen = new Set(view.seen);
     if (uuid) seen.add(uuid);
-    const next: RunView = { ...view, seen, messages: [...view.messages, message] };
+    const next: RunView = withTask({ ...view, seen, messages: [...view.messages, message] }, message);
     if (message.type === 'assistant' || message.type === 'result') {
         next.partial = '';
         next.partialTool = null;

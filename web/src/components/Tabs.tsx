@@ -1,6 +1,7 @@
 import type { ReactElement } from 'react';
 import { api } from '../api';
 import { useStore } from '../store';
+import { useBackgroundTasks } from './chat/TasksStrip';
 import type { Run, RunState } from '../../../shared/protocol';
 
 const STATE_LABEL: Record<RunState, string> = {
@@ -14,6 +15,13 @@ const STATE_LABEL: Record<RunState, string> = {
 
 export function stateDot(state: RunState): ReactElement {
     return <span className={`dot dot-${state}`} title={STATE_LABEL[state]} />;
+}
+
+/** Point d'état d'un onglet ; un onglet au repos dont des tâches tournent encore en arrière-plan le montre. */
+function TabDot({ run }: { run: Run }): ReactElement {
+    const tasks = useBackgroundTasks(run).length;
+    if (tasks > 0 && run.state === 'idle') return <span className="dot dot-background" title={`${tasks} tâche${tasks > 1 ? 's' : ''} en arrière-plan`} />;
+    return stateDot(run.state);
 }
 
 export function Tabs(): ReactElement {
@@ -46,7 +54,7 @@ export function Tabs(): ReactElement {
             </button>
             {runs.map((run) => (
                 <button key={run.id} className={`tab ${page === 'chat' && run.id === activeRunId ? 'active' : ''}`} onClick={() => setActive(run.id)} title={`${run.cwd}\n${STATE_LABEL[run.state]}`}>
-                    {stateDot(run.state)}
+                    <TabDot run={run} />
                     <span className="tab-title">{run.title}</span>
                     <span className="tab-close" onClick={(e) => void close(run, e)} title="Fermer l'onglet (la session reste reprenable)">
                         ×

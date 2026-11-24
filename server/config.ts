@@ -7,5 +7,7 @@ export const DATA_DIR = process.env.CLAUDED_GIT_HOME ?? join(homedir(), '.claude
 export const DB_PATH = join(DATA_DIR, 'clauded-git.db');
 export const HOST = '127.0.0.1';
 export const PORT = Number(process.env.PORT ?? 4747);
+/** Implémentations où Claude travaille en même temps, au plus (les lots attendent une place). */
+export const MAX_PARALLEL = Math.max(1, Number(process.env.CLAUDED_GIT_MAX_PARALLEL ?? 3) || 3);
 
 mkdirSync(DATA_DIR, { recursive: true });

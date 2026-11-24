@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { DATA_DIR } from './config.js';
 import { getRepo, getRun, getSpecPlanRow, getSpecVersion, insertRun, insertSpecVersion, latestSpecVersion, listSpecRuns, listSpecVersions, saveSpecPlanRow } from './db.js';
 import { exec } from './exec.js';
-import { graphql, repoSlug } from './github.js';
+import { graphql, issueNodeIds, repoSlug } from './github.js';
 import { Progress } from './progress.js';
 import { watchDirectory, type Closable } from './watch.js';
 import { sessions } from './sessions/manager.js';
@@ -276,20 +276,6 @@ async function ghCreateIssue(repo: Repo, title: string, body: string): Promise<{
     }
 }
 
-async function issueIds(repo: Repo, numbers: number[]): Promise<Map<number, string>> {
-    if (numbers.length === 0) return new Map();
-    const fields = numbers.map((n) => `i${n}: issue(number: ${n}) { id }`).join('\n');
-    const data = await graphql<{ repository: Record<string, { id: string } | null> }>(`query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`, {
-        owner: repo.owner ?? '',
-        name: repo.name ?? '',
-    });
-    const ids = new Map<number, string>();
-    for (const n of numbers) {
-        const id = data.repository[`i${n}`]?.id;
-        if (id) ids.set(n, id);
-    }
-    return ids;
-}
 
 /**
  * Crée sur GitHub les issues cochées qui ne le sont pas encore : la parente, puis les autres dans
@@ -327,7 +313,7 @@ export async function createPlanIssues(runId: number, opId: string | undefined):
         const warnings: string[] = [];
         const children = plan.issues.filter((i) => i.include && i.number !== null) as Array<SpecIssue & { number: number }>;
         const parentNumber = parent ? plan.parent?.number ?? null : null;
-        const ids = await issueIds(repo, [...(parentNumber !== null ? [parentNumber] : []), ...children.map((c) => c.number)]);
+        const ids = await issueNodeIds(repo, [...(parentNumber !== null ? [parentNumber] : []), ...children.map((c) => c.number)]);
         for (const child of children) {
             const childId = ids.get(child.number);
             if (!childId) continue;

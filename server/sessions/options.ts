@@ -58,6 +58,8 @@ export interface SessionParams {
     maxTurns?: number;
     abortController?: AbortController;
     canUseTool: CanUseTool;
+    /** Ajouté au prompt système Claude Code (consignes propres à l'app). */
+    appendSystemPrompt?: string;
 }
 
 /**
@@ -68,7 +70,7 @@ export interface SessionParams {
 export function sessionOptions(params: SessionParams): Options {
     const options: Options = {
         cwd: params.cwd,
-        systemPrompt: { type: 'preset', preset: 'claude_code' },
+        systemPrompt: { type: 'preset', preset: 'claude_code', ...(params.appendSystemPrompt ? { append: params.appendSystemPrompt } : {}) },
         settingSources: ['user', 'project', 'local'],
         permissionMode: params.permissionMode ?? 'default',
         canUseTool: params.canUseTool,
