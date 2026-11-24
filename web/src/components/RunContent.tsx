@@ -1,22 +1,27 @@
 import type { ReactElement } from 'react';
-import { api } from '../api';
+import { lazy, Suspense } from 'react';
 import { ChatView } from './chat/ChatView';
-import { ImplementView } from './implement/ImplementView';
-import { GitMenu } from './MergeIntegration';
-import { PrView } from './pulls/PrView';
-import { SpecView } from './spec/SpecView';
+import { OpenMenu } from './OpenMenu';
 import type { Run } from '../../../shared/protocol';
 
-/** La vue d'un onglet selon son type (chat, implémentation, review de PR, spec). */
+// Vues chargées à la première ouverture d'un onglet de ce type : elles tirent le diff, la review et
+// la spec, inutiles pour afficher l'app et un chat hors dépôt.
+const RepoRunView = lazy(() => import('./run/RepoRunView').then((m) => ({ default: m.RepoRunView })));
+const SpecView = lazy(() => import('./spec/SpecView').then((m) => ({ default: m.SpecView })));
+
+function Loading(): ReactElement {
+    return <div className="muted pad">chargement…</div>;
+}
+
+/**
+ * La vue d'un onglet : spec, onglet de dépôt (implémentation, PR, conflits, chat — mêmes panneaux et
+ * mêmes actions), ou chat dans un dossier hors dépôt.
+ */
+// `key` : chaque onglet a sa propre vue (état de la branche, PR, menus ouverts), même quand le volet
+// passe d'un onglet à un autre du même type.
 export function RunContent({ run }: { run: Run }): ReactElement {
-    if (run.type === 'implement' || run.type === 'merge') return <ImplementView run={run} />;
-    if (run.type === 'spec') return <SpecView run={run} />;
-    if (run.type === 'pr') return <PrView run={run} />;
-    if (run.repoId !== null && (run.issueNumber !== null || run.prNumber !== null)) {
-        // Chat lié à une issue (ou une PR) : merge de master dans sa branche, et de sa branche dans develop.
-        const what = run.issueNumber !== null ? `la branche de l'issue #${run.issueNumber}` : `la branche de la PR #${run.prNumber}`;
-        const actions = <GitMenu repoId={run.repoId} base={run.baseBranch} what={what} mergeBase={() => api.mergeBase(run.id)} mergeIntegration={() => api.mergeIntegration(run.id)} runId={run.id} />;
-        return <ChatView run={run} actions={actions} />;
+    if (run.type === 'spec' || run.repoId !== null) {
+        return <Suspense fallback={<Loading />}>{run.type === 'spec' ? <SpecView run={run} /> : <RepoRunView key={run.id} run={run} />}</Suspense>;
     }
-    return <ChatView run={run} />;
+    return <ChatView key={run.id} run={run} actions={<OpenMenu path={run.cwd} runId={run.id} />} />;
 }

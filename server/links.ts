@@ -1,5 +1,6 @@
 import { git } from './git.js';
 import { getIssue, gh, graphql, pullRequestForBranch, repoSlug } from './github.js';
+import { forget, memo } from './memo.js';
 import { loadProfile } from './profiles.js';
 import { getPull } from './pulls.js';
 import type { GithubLink, Repo, Run, RunLinks, WorkflowLink } from '../shared/protocol.js';
@@ -19,14 +20,13 @@ async function githubLinks(repo: Repo, run: Run): Promise<GithubLink[]> {
         if (!links.some((l) => l.kind === link.kind && l.number === link.number)) links.push(link);
     };
 
-    if (run.prNumber !== null) {
-        const pull = await getPull(repo, run.prNumber);
+    // La PR et l'issue de l'onglet sont lues en même temps.
+    const [pull, issue] = await Promise.all([run.prNumber !== null ? getPull(repo, run.prNumber) : null, run.issueNumber !== null ? getIssue(repo, run.issueNumber) : null]);
+    if (pull) {
         add({ kind: 'pr', number: pull.number, title: pull.title, url: pull.url, state: pull.state, isDraft: pull.isDraft });
-        for (const issue of pull.issues) add({ kind: 'issue', number: issue.number, title: issue.title, url: issueUrl(repo, issue.number), state: issue.state });
+        for (const ref of pull.issues) add({ kind: 'issue', number: ref.number, title: ref.title, url: issueUrl(repo, ref.number), state: ref.state });
     }
-
-    if (run.issueNumber !== null) {
-        const issue = await getIssue(repo, run.issueNumber);
+    if (issue) {
         add({ kind: 'issue', number: issue.number, title: issue.title, url: issue.url, state: issue.state });
         for (const pr of issue.pullRequests) add({ kind: 'pr', number: pr.number, title: pr.title, url: pr.url, state: pr.state, isDraft: pr.isDraft });
     }
@@ -110,8 +110,11 @@ async function mergeWorkflows(repo: Repo, run: Run, links: GithubLink[]): Promis
     const integration = profile.integrationBranch;
     const branch = run.type !== 'merge' && run.branch ? run.branch : (pulls[0]?.headRefName ?? null);
     if (integration && branch) {
-        await git(repo.path, ['fetch', 'origin', integration, profile.baseBranch]);
-        await git(repo.path, ['fetch', 'origin', branch]);
+        // `git fetch` passe par le réseau : au plus une fois par minute pour ces branches.
+        await memo(`fetch:${repo.path}:${integration}:${profile.baseBranch}:${branch}`, FETCH_TTL_MS, async () => {
+            await git(repo.path, ['fetch', 'origin', integration, profile.baseBranch]);
+            await git(repo.path, ['fetch', 'origin', branch]);
+        });
         const ref = await git(repo.path, ['rev-parse', '--verify', '--quiet', `origin/${branch}`]);
         // Branche supprimée après merge : on repart du dernier commit connu de sa PR.
         const tip = ref.code === 0 ? ref.stdout.trim() : (pulls.find((p) => p.headRefName === branch)?.headRefOid ?? null);
@@ -119,20 +122,46 @@ async function mergeWorkflows(repo: Repo, run: Run, links: GithubLink[]): Promis
     }
 
     const workflows: WorkflowLink[] = [];
-    for (const { target, sha } of targets) {
-        const runs = await gh<GhRun[]>(['run', 'list', '--repo', repoSlug(repo), '--commit', sha, '--limit', '20', '--json', 'databaseId,workflowName,displayTitle,url,status,conclusion,event,headBranch,createdAt']).catch(() => [] as GhRun[]);
-        for (const r of runs) {
+    // Un `gh run list` par commit de merge, tous en même temps.
+    const lists = await Promise.all(
+        targets.map(({ sha }) =>
+            gh<GhRun[]>(['run', 'list', '--repo', repoSlug(repo), '--commit', sha, '--limit', '20', '--json', 'databaseId,workflowName,displayTitle,url,status,conclusion,event,headBranch,createdAt']).catch(() => [] as GhRun[]),
+        ),
+    );
+    targets.forEach(({ target }, i) => {
+        for (const r of lists[i] ?? []) {
             if (r.headBranch !== target) continue;
             workflows.push({ id: r.databaseId, name: r.workflowName || r.displayTitle, url: r.url, target, status: r.status, conclusion: r.conclusion || null, createdAt: r.createdAt });
         }
-    }
+    });
     return workflows.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-/** Tout ce que l'en-tête d'un onglet montre de GitHub : issue, PR, et workflows lancés par ses merges. */
-export async function runLinks(repo: Repo, run: Run): Promise<RunLinks> {
-    const links = await githubLinks(repo, run);
-    const workflows = await mergeWorkflows(repo, run, links).catch(() => [] as WorkflowLink[]);
-    return { links, workflows };
+/** Les liens d'un onglet sont relus à chaque fin de tour et toutes les 30 s tant qu'un workflow tourne. */
+const LINKS_TTL_MS = 15_000;
+const FETCH_TTL_MS = 60_000;
+
+/**
+ * Tout ce que l'en-tête d'un onglet montre de GitHub : issue, PR, et workflows lancés par ses merges.
+ * Gardé LINKS_TTL_MS par onglet (plusieurs volets ou une reconnexion le redemandent en même temps).
+ */
+export function runLinks(repo: Repo, run: Run): Promise<RunLinks> {
+    if (run.state === 'running' || run.state === 'starting') forgetRunLinks(repo, run);
+    return memo(`links:${run.id}:${run.issueNumber}:${run.prNumber}:${run.branch}`, LINKS_TTL_MS, async () => {
+        const links = await githubLinks(repo, run);
+        const workflows = await mergeWorkflows(repo, run, links).catch(() => [] as WorkflowLink[]);
+        return { links, workflows };
+    });
 }
 
+
+/**
+ * Oublie ce qu'on sait de GitHub pour cet onglet : appelé quand un tour se termine, puisque Claude a
+ * pu ouvrir une PR ou pousser pendant le tour.
+ */
+export function forgetRunLinks(repo: Repo, run: Run): void {
+    forget(`links:${run.id}:`);
+    if (run.branch) forget(`branch-pr:${repo.id}:${run.branch}`);
+    if (run.prNumber !== null) forget(`pull:${repo.id}:${run.prNumber}`);
+    if (run.issueNumber !== null) forget(`issue:${repo.id}:${run.issueNumber}`);
+}

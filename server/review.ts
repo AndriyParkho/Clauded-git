@@ -6,7 +6,7 @@ import { clearDrafts, getReviewRow, listDrafts, listRepos, replaceClaudeDrafts, 
 import { exec } from './exec.js';
 import { repoSlug } from './github.js';
 import type { Profile } from './profiles.js';
-import { getPull, pullAsContext, pullDiff } from './pulls.js';
+import { forgetPull, getPull, pullAsContext, pullDiff } from './pulls.js';
 import { watchDirectory, type Closable } from './watch.js';
 import { isCommentable, parseDiff } from '../shared/diff.js';
 import type { DraftLabel, PullDetail, Repo, ReviewEvent, ReviewState } from '../shared/protocol.js';
@@ -221,6 +221,8 @@ interface ReviewPayload {
 export async function publishReview(repo: Repo, prNumber: number): Promise<ReviewState> {
     const state = reviewState(repo, prNumber);
     if (state.drafts.length === 0 && !state.body.trim() && state.event === 'PENDING') throw new Error('rien à publier');
+    // Publication : le dernier commit de la PR doit être frais, pas celui du cache.
+    forgetPull(repo, prNumber);
     const [pull, patch] = await Promise.all([getPull(repo, prNumber), pullDiff(repo, prNumber)]);
     const files = parseDiff(patch);
 
@@ -258,6 +260,7 @@ export async function publishReview(repo: Repo, prNumber: number): Promise<Revie
         }
         const response = JSON.parse(result.stdout) as { html_url?: string };
         clearDrafts(repo.id, prNumber);
+        forgetPull(repo, prNumber);
         saveReviewRow(repo.id, prNumber, { body: '', publishedAt: new Date().toISOString(), publishedUrl: response.html_url ?? pull.url });
     } finally {
         await unlink(input).catch(() => undefined);

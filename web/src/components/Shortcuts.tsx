@@ -1,5 +1,7 @@
+import '../styles/notifications.css';
 import type { ReactElement } from 'react';
 import { useEffect } from 'react';
+import { nextWaiting, refreshPermission, useNotificationPrefs } from '../attention';
 import { useStore } from '../store';
 import { ALT, MOD, paneRun, showRun, useUi } from '../ui';
 import { Modal } from './Modal';
@@ -11,8 +13,9 @@ function editable(target: EventTarget | null): boolean {
 }
 
 /**
- * Raccourcis globaux : ⌘K palette, ⌘B rail, ⌥1…⌥9 et ⌥↑/⌥↓ pour changer d'onglet, ? pour l'aide.
- * ⌥ + chiffre est lu sur `code` : sur Mac, `key` donne le caractère spécial (¡, ™…).
+ * Raccourcis globaux : ⌘K palette, ⌘B rail, ⌥1…⌥9 et ⌥↑/⌥↓ pour changer d'onglet, ⌥A pour le
+ * prochain onglet qui attend, ? pour l'aide.
+ * ⌥ + chiffre ou lettre est lu sur `code` : sur Mac, `key` donne le caractère spécial (¡, ™, æ…).
  */
 export function useShortcuts(): void {
     useEffect(() => {
@@ -38,6 +41,18 @@ export function useShortcuts(): void {
                     if (run) {
                         e.preventDefault();
                         showRun(run.id);
+                    }
+                    return;
+                }
+                // ⌥A tape « å » sur Mac : dans un champ de saisie, la touche reste au champ.
+                if (e.code === 'KeyA' && !e.shiftKey && !editable(e.target)) {
+                    const run = nextWaiting(order, paneRun(ui.focusedPane));
+                    if (run) {
+                        e.preventDefault();
+                        showRun(run.id);
+                    } else if (!editable(e.target)) {
+                        e.preventDefault();
+                        useStore.getState().notify("Aucun autre onglet n'attend ta réponse.", { kind: 'info', key: 'next-waiting' });
                     }
                     return;
                 }
@@ -67,8 +82,13 @@ const KEYS: Array<{ keys: string[]; label: string }> = [
     { keys: [MOD, 'B'], label: 'Replier / déplier le rail' },
     { keys: [ALT, '1…9'], label: 'Aller au n-ième onglet du rail' },
     { keys: [ALT, '↑ / ↓'], label: 'Onglet précédent / suivant' },
+    { keys: [ALT, 'A'], label: 'Prochain onglet qui attend ta réponse' },
     { keys: [ALT, 'clic'], label: 'Ouvrir un onglet du rail à côté (ou le glisser vers la droite)' },
     { keys: [MOD, '↵'], label: 'Dans la palette : ouvrir à côté' },
+    { keys: ['j', 'k'], label: 'Issues et PR : ligne suivante / précédente (aussi ↓ ↑)' },
+    { keys: ['↵'], label: 'Issues et PR : aller à l\'action principale (↵ encore pour la lancer)' },
+    { keys: ['x'], label: 'Issues : cocher pour un lot' },
+    { keys: ['/'], label: 'Issues et PR : rechercher dans la liste' },
     { keys: ['?'], label: 'Afficher cette aide' },
     { keys: ['Échap'], label: 'Fermer un menu, la palette ou une fenêtre' },
 ];
@@ -97,6 +117,30 @@ export function ShortcutsDialog(): ReactElement | null {
                     </div>
                 ))}
             </dl>
+            <NotificationPref />
         </Modal>
+    );
+}
+
+/** Interrupteur des notifications système (onglet qui attend ou finit son tour hors de vue). */
+function NotificationPref(): ReactElement {
+    const system = useNotificationPrefs((s) => s.system);
+    const permission = useNotificationPrefs((s) => s.permission);
+    const setSystem = useNotificationPrefs((s) => s.setSystem);
+    useEffect(refreshPermission, []);
+    let hint = 'La permission du navigateur est demandée à la première notification.';
+    if (permission === 'unsupported') hint = 'Ce navigateur ne gère pas les notifications système.';
+    else if (permission === 'denied') hint = 'Bloquées par le navigateur : autorise-les dans les réglages du site.';
+    else if (permission === 'granted') hint = 'Envoyées quand la fenêtre n\'a pas le focus ; sinon, un toast suffit.';
+    return (
+        <div className="notif-pref">
+            <label className="notif-pref-row">
+                <input type="checkbox" role="switch" className="notif-switch" checked={system} disabled={permission === 'unsupported'} onChange={(e) => setSystem(e.target.checked)} aria-describedby="notif-pref-hint" />
+                Notifications système quand un onglet attend ta réponse ou finit son tour
+            </label>
+            <p id="notif-pref-hint" className={`notif-pref-hint ${system && permission === 'denied' ? 'warn' : ''}`}>
+                {hint}
+            </p>
+        </div>
     );
 }

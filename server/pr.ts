@@ -1,12 +1,13 @@
 import { mkdir, stat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { findPrRun, getRun, insertRun, listRunsForPr } from './db.js';
+import { findImplementRunByBranch, findPrRun, getRun, insertRun, listRunsForPr } from './db.js';
 import { addWorktree, ensureWorktreesExcluded, git, gitOk, listWorktrees, worktreeStatus } from './git.js';
 import { pullRequestForBranch } from './github.js';
 import { loadProfile, type Profile } from './profiles.js';
 import { Progress } from './progress.js';
 import { getPull, openThreadsAsPrompt } from './pulls.js';
 import { reviewFile, reviewPrompt } from './review.js';
+import { chatBranch } from './implement.js';
 import { sessions } from './sessions/manager.js';
 import type { PullDetail, PullDetailResponse, Repo, Run } from '../shared/protocol.js';
 
@@ -101,7 +102,25 @@ export async function openPr(repo: Repo, number: number, options: { review: bool
     });
 }
 
+/**
+ * Onglet d'implémentation sorti sur la branche de la PR (ma PR, ouverte depuis son issue) : c'est le
+ * même travail, on y revient plutôt que d'ouvrir une seconde session sur la branche.
+ */
+async function implementRunForPr(repo: Repo, number: number): Promise<Run | undefined> {
+    const pull = await getPull(repo, number);
+    const run = findImplementRunByBranch(repo.id, localBranch(pull));
+    return run?.worktree && (await exists(run.worktree)) ? run : undefined;
+}
+
 async function openPrRun(repo: Repo, number: number, progress: Progress, review: boolean): Promise<Run> {
+    // Une review veut un contexte neuf (relecture à froid) : elle garde son propre onglet.
+    const own = review ? undefined : await implementRunForPr(repo, number);
+    if (own) {
+        progress.plan([STEPS.session]);
+        progress.step(STEPS.session, own.title);
+        await sessions.open(own.id);
+        return getRun(own.id) ?? own;
+    }
     const existing = findPrRun(repo.id, number);
     let run: Run;
     if (existing && (await exists(existing.cwd))) {
@@ -132,7 +151,8 @@ async function openPrRun(repo: Repo, number: number, progress: Progress, review:
 
 /** Envoie au chat d'un onglet les commentaires de review non résolus de la PR de sa branche. */
 export async function sendReviewComments(repo: Repo, run: Run): Promise<{ sent: number }> {
-    const number = run.prNumber ?? (run.branch ? (await pullRequestForBranch(repo, run.branch))?.number : undefined);
+    const branch = run.branch ?? (await chatBranch(repo, run));
+    const number = run.prNumber ?? (branch ? (await pullRequestForBranch(repo, branch))?.number : undefined);
     if (number === undefined) throw new Error('pas de PR pour cet onglet');
     const pull = await getPull(repo, number);
     const prompt = openThreadsAsPrompt(pull);

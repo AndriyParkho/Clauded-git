@@ -1,5 +1,6 @@
 import { exec } from './exec.js';
-import { graphql, repoSlug } from './github.js';
+import { GITHUB_READ_TTL_MS, graphql, repoSlug } from './github.js';
+import { forget, memo } from './memo.js';
 import type { CheckInfo, ChecksState, IssueComment, IssueRef, PullDetail, PullFilter, PullSummary, Repo, ReviewDecision } from '../shared/protocol.js';
 
 const PULLS_PAGE_SIZE = 40;
@@ -97,7 +98,17 @@ export async function listPulls(repo: Repo, filter: PullFilter): Promise<PullSum
     return data.search.nodes.filter((node): node is PullNode => 'number' in node).map(toSummary);
 }
 
-export async function getPull(repo: Repo, number: number): Promise<PullDetail> {
+/** Détail d'une PR (gardé GITHUB_READ_TTL_MS, appels simultanés partagés). */
+export function getPull(repo: Repo, number: number): Promise<PullDetail> {
+    return memo(`pull:${repo.id}:${number}`, GITHUB_READ_TTL_MS, () => fetchPull(repo, number));
+}
+
+/** À appeler après une écriture sur la PR (review publiée, commentaires…). */
+export function forgetPull(repo: Repo, number: number): void {
+    forget(`pull:${repo.id}:${number}`);
+}
+
+async function fetchPull(repo: Repo, number: number): Promise<PullDetail> {
     const data = await graphql<{ repository: { pullRequest: PullDetailNode | null } }>(
         `query($owner: String!, $name: String!, $number: Int!) {
             repository(owner: $owner, name: $name) {

@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
-import { useEffect, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import { memo, useEffect, useState } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 type MermaidApi = typeof import('mermaid').default;
@@ -92,25 +92,30 @@ function mermaidSource(pre: HastNode | undefined): string | undefined {
         .trimEnd();
 }
 
-export function Markdown({ text }: { text: string }): ReactElement {
+// Plugins et rendus hors du composant : des références stables, que react-markdown n'a pas à comparer.
+const PLUGINS = [remarkGfm];
+const COMPONENTS: Components = {
+    a: ({ href, children }) => (
+        <a href={href} target="_blank" rel="noreferrer">
+            {children}
+        </a>
+    ),
+    pre: ({ node, children }) => {
+        const source = mermaidSource(node as HastNode | undefined);
+        return source !== undefined ? <Mermaid code={source} /> : <pre>{children}</pre>;
+    },
+};
+
+/**
+ * Texte markdown. Mémoïsé sur le texte : pendant qu'une réponse arrive, seul le message en cours
+ * est réanalysé, pas tout le fil.
+ */
+export const Markdown = memo(function Markdown({ text }: { text: string }): ReactElement {
     return (
         <div className="markdown">
-            <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={{
-                    a: ({ href, children }) => (
-                        <a href={href} target="_blank" rel="noreferrer">
-                            {children}
-                        </a>
-                    ),
-                    pre: ({ node, children }) => {
-                        const source = mermaidSource(node as HastNode | undefined);
-                        return source !== undefined ? <Mermaid code={source} /> : <pre>{children}</pre>;
-                    },
-                }}
-            >
+            <ReactMarkdown remarkPlugins={PLUGINS} components={COMPONENTS}>
                 {text}
             </ReactMarkdown>
         </div>
     );
-}
+});

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import {
     getSessionMessages,
+    type EffortLevel,
     query,
     type PermissionMode,
     type PermissionResult,
@@ -11,9 +12,12 @@ import {
     type SlashCommand,
 } from '@anthropic-ai/claude-agent-sdk';
 import { artifactInstructions } from '../artifacts.js';
+import { DEFAULT_EFFORT } from '../config.js';
 import { getRun, updateRun } from '../db.js';
 import { probeUsage, readUsage } from './account.js';
 import { PromptQueue, sessionOptions } from './options.js';
+import { intentHooks, intentInstructions } from './intent.js';
+import { CONTEXT_HINTS, sessionMcp } from './scope.js';
 import type { AccountUsage, AskRequest, ImageAttachment, McpAction, McpServerInfo, McpStatus, ModelChoice, PermissionEvent, Run, SlashCommandInfo, UsageInfo } from '../../shared/protocol.js';
 
 /** Outils dont l'appel est une question à l'utilisateur, à afficher comme une carte dans le chat. */
@@ -41,6 +45,8 @@ export interface ManagerEvents {
     permission: [event: PermissionEvent];
     commands: [runId: number, commands: SlashCommandInfo[]];
     models: [runId: number, models: ModelChoice[]];
+    /** La conversation de l'onglet repart de zéro (`/clear`) : les clients rejouent l'onglet. */
+    reset: [runId: number];
     usage: [usage: UsageInfo];
     account: [account: AccountUsage];
     error: [runId: number | undefined, message: string];
@@ -78,6 +84,8 @@ const ACCOUNT_POLL_MS = 5 * 60_000;
  */
 export class SessionManager extends EventEmitter<ManagerEvents> {
     private readonly live = new Map<number, Live>();
+    /** Ouvertures en cours (la lecture du profil précède le démarrage du CLI). */
+    private readonly opening = new Map<number, Promise<Run>>();
     private account: AccountUsage | undefined;
     private accountRead: Promise<void> | undefined;
     private accountTimer: NodeJS.Timeout | undefined;
@@ -132,14 +140,28 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
     }
 
     /** Démarre la session d'un onglet (nouvelle, ou reprise de `run.sessionId`). Sans effet si déjà vivante. */
-    async open(runId: number): Promise<Run> {
+    open(runId: number): Promise<Run> {
         const existing = this.live.get(runId);
-        if (existing) return existing.run;
+        if (existing) return Promise.resolve(existing.run);
+        let opening = this.opening.get(runId);
+        if (!opening) {
+            opening = this.start(runId).finally(() => this.opening.delete(runId));
+            this.opening.set(runId, opening);
+        }
+        return opening;
+    }
+
+    private async start(runId: number): Promise<Run> {
         const run = getRun(runId);
         if (!run) throw new Error(`onglet ${runId} introuvable`);
+        const onlyMcp = await sessionMcp(run);
 
         const queue = new PromptQueue();
         const live: Live = { run, q: undefined as unknown as Query, queue, messages: [], asks: new Map(), commands: [], models: [] };
+        // Noms des serveurs MCP de la session, lus une fois (garde-fou d'environnement d'une investigation).
+        let servers: Promise<string[]> | undefined;
+        const mcpServers = (): Promise<string[]> => (servers ??= live.q.mcpServerStatus().then((list) => list.map((s) => s.name)));
+        const intent = intentInstructions(run);
         live.q = query({
             prompt: queue,
             options: sessionOptions({
@@ -147,9 +169,12 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
                 resume: run.sessionId ?? undefined,
                 permissionMode: run.permissionMode ?? undefined,
                 model: run.model ?? undefined,
+                effort: run.effort ?? DEFAULT_EFFORT,
+                onlyMcp,
                 includePartialMessages: true,
                 canUseTool: (tool, input) => this.decidePermission(live, tool, input),
-                appendSystemPrompt: artifactInstructions(run.id),
+                appendSystemPrompt: [artifactInstructions(run.id), CONTEXT_HINTS, ...(intent ? [intent] : [])].join('\n\n'),
+                hooks: intentHooks(run, mcpServers),
             }),
         });
         this.live.set(runId, live);
@@ -162,9 +187,15 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
             .initializationResult()
             .then((init) => {
                 live.commands = init.commands.map(toCommandInfo);
-                live.models = init.models.map((m) => ({ value: m.value, displayName: m.displayName, description: m.description }));
+                live.models = init.models.map((m) => ({
+                    value: m.value,
+                    displayName: m.displayName,
+                    description: m.description,
+                    ...(m.supportsEffort && m.supportedEffortLevels?.length ? { efforts: m.supportedEffortLevels } : {}),
+                }));
                 this.emit('commands', runId, live.commands);
                 this.emit('models', runId, live.models);
+                void this.refreshUsage(live);
             })
             .catch(() => undefined);
 
@@ -188,6 +219,11 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
             await this.mcp(runId, 'status');
             return;
         }
+        // `/clear` : nouvelle conversation dans le même onglet (le transcript précédent reste sur le disque).
+        if (text.trim() === '/clear' && images.length === 0) {
+            await this.reset(runId);
+            return;
+        }
         const message = live.queue.push(text, images);
         // Le CLI ne renvoie pas nos propres prompts : on les garde pour l'affichage et le rejeu.
         const echo = { ...message, session_id: live.run.sessionId ?? '' } as SDKMessage;
@@ -200,6 +236,18 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
         const live = this.live.get(runId);
         if (!live) return;
         await live.q.interrupt();
+    }
+
+    /** Fichiers d'instructions que la session a chargés (CLAUDE.md, mémoire), ou rien sans session ouverte. */
+    async loadedMemoryFiles(runId: number): Promise<Array<{ path: string; tokens: number }>> {
+        const live = this.live.get(runId);
+        if (!live) return [];
+        try {
+            const context = await live.q.getContextUsage({ detail: 'summary' });
+            return context.memoryFiles.map((f) => ({ path: f.path, tokens: f.tokens }));
+        } catch {
+            return live.usage?.context?.memoryFiles ?? [];
+        }
     }
 
     /** État des serveurs MCP de la session, après une action éventuelle (reconnexion, activation). */
@@ -278,6 +326,36 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
         this.patch(live, { model });
     }
 
+    /**
+     * Effort de la session : appliqué tout de suite à une session ouverte (tours suivants), retenu
+     * pour l'onglet dans tous les cas.
+     */
+    async setEffort(runId: number, effort: EffortLevel): Promise<void> {
+        const live = this.live.get(runId);
+        if (!live) {
+            updateRun(runId, { effort });
+            const run = getRun(runId);
+            if (run) this.emit('run', run);
+            return;
+        }
+        await live.q.applyFlagSettings({ effortLevel: effort });
+        this.patch(live, { effort });
+    }
+
+    /**
+     * Nouvelle conversation dans le même onglet (comme `/clear`) : la session est fermée, l'onglet
+     * oublie son identifiant de session et en démarre une neuve, avec les mêmes réglages.
+     */
+    async reset(runId: number): Promise<Run> {
+        const live = this.live.get(runId);
+        if (live && live.run.state === 'running') throw new Error('Claude travaille encore : interromps le tour avant de repartir de zéro.');
+        this.close(runId);
+        updateRun(runId, { sessionId: null, costUsd: 0, lastError: null });
+        const run = await this.open(runId);
+        this.emit('reset', runId);
+        return run;
+    }
+
     /** Ferme la session Claude d'un onglet (le transcript reste reprenable). */
     close(runId: number): void {
         const live = this.live.get(runId);
@@ -337,7 +415,18 @@ export class SessionManager extends EventEmitter<ManagerEvents> {
         const usage: UsageInfo = { runId: live.run.id, at: new Date().toISOString() };
         try {
             const context = await live.q.getContextUsage({ detail: 'summary' });
-            usage.context = { tokens: context.totalTokens, max: context.maxTokens, percent: context.percentage };
+            const parts = context.categories
+                .filter((c) => c.kind === 'used' && c.tokens > 0)
+                .map((c) => ({ id: c.id ?? c.name, name: c.name, tokens: c.tokens }))
+                .sort((a, b) => b.tokens - a.tokens);
+            usage.context = {
+                tokens: context.totalTokens,
+                max: context.maxTokens,
+                percent: context.percentage,
+                parts,
+                memoryFiles: context.memoryFiles.map((f) => ({ path: f.path, tokens: f.tokens })),
+                ...(context.isAutoCompactEnabled && context.autoCompactThreshold ? { autoCompactAt: context.autoCompactThreshold } : {}),
+            };
         } catch {
             // session déjà fermée, ou CLI trop ancien
         }

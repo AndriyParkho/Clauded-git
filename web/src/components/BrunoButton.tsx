@@ -38,7 +38,7 @@ export function BrunoButton({ repoId, path, label = 'Bruno' }: { repoId: number;
         try {
             const result = await api.switchBruno(repoId, path);
             useStore.setState((s) => ({ bruno: { ...s.bruno, [repoId]: { command: result.command, active: result.active } } }));
-            notify(result.output || `Bruno → ${path}`);
+            notify(result.output || `Bruno → ${path}`, { kind: 'success' });
         } catch (error) {
             notify(String(error));
             void loadBruno(repoId, true);

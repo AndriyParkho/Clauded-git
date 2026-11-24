@@ -1,23 +1,30 @@
 import type { ReactElement, ReactNode } from 'react';
-import { useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ArtifactsBar } from './ArtifactsBar';
 import { AskCard } from './AskCard';
 import { Composer } from './Composer';
 import { GithubLinks } from './GithubLinks';
 import { McpDialog } from './McpCard';
+import { MemoryDialog } from './MemoryDialog';
 import { MessageList } from './MessageList';
 import { QuoteSelection, QuoteStack, withQuotes } from './QuoteSelection';
 import { StatusBar } from './StatusBar';
 import { TasksStrip } from './TasksStrip';
 import { useStore } from '../../store';
 import { Icon } from '../Icon';
-import { RUN_ICON, repoLabel } from '../Tabs';
+import { IntentBadge, intentClass, runIcon, repoLabel } from '../Tabs';
 import { ResizeHandle, useSize } from '../ResizeHandle';
 import { send } from '../../ws';
-import type { Quote, Run } from '../../../../shared/protocol';
+import type { Quote, Run, SlashCommandInfo } from '../../../../shared/protocol';
 
 // Référence stable pour le sélecteur zustand.
 const NO_QUOTES: Quote[] = [];
+
+/** Commandes gérées par l'app (le SDK ne les expose pas) : proposées dans l'autocomplétion. */
+const APP_COMMANDS: SlashCommandInfo[] = [
+    { name: 'mcp', description: 'Serveurs MCP : état, outils, reconnexion', argumentHint: '' },
+    { name: 'memory', description: 'Fichiers de mémoire (CLAUDE.md, mémoire automatique) : voir, ouvrir, créer', argumentHint: '' },
+];
 
 interface Props {
     run: Run;
@@ -44,6 +51,9 @@ export function ChatView({ run, views, actions, panel, subtitle, wide }: Props):
     const panelKey = wide ? 'panel-wide' : 'panel';
     const panelWidth = useSize(panelKey);
     const body = useRef<HTMLDivElement>(null);
+    const [memoryOpen, setMemoryOpen] = useState(false);
+    const sdkCommands = view?.commands;
+    const commands = useMemo(() => [...APP_COMMANDS.filter((c) => !sdkCommands?.some((s) => s.name === c.name)), ...(sdkCommands ?? [])], [sdkCommands]);
     const aside = useRef<HTMLElement>(null);
 
     return (
@@ -51,9 +61,10 @@ export function ChatView({ run, views, actions, panel, subtitle, wide }: Props):
             <header className="chat-head">
                 <div className="chat-head-main">
                     <div className="chat-heading">
-                        <h1 className="chat-title">
-                            <Icon name={RUN_ICON[run.type]} size={16} />
+                        <h1 className={`chat-title ${intentClass(run)}`}>
+                            <Icon name={runIcon(run)} size={16} />
                             <span>{run.title}</span>
+                            <IntentBadge run={run} />
                         </h1>
                         <div className="chat-sub">
                             <span className="chat-repo" title={run.cwd}>
@@ -80,7 +91,7 @@ export function ChatView({ run, views, actions, panel, subtitle, wide }: Props):
                     <QuoteStack runId={run.id} />
                     <Composer
                         runId={run.id}
-                        commands={view?.commands ?? []}
+                        commands={commands}
                         running={run.state === 'running'}
                         draft={draft}
                         onDraftConsumed={consumeDraft}
@@ -88,6 +99,8 @@ export function ChatView({ run, views, actions, panel, subtitle, wide }: Props):
                         onSend={(text, images) => {
                             // `/mcp` ouvre la fenêtre des serveurs MCP ; il n'est pas envoyé à la conversation.
                             if (text.trim() === '/mcp' && images.length === 0 && quotes.length === 0) return send({ type: 'mcp', runId: run.id, action: 'status' });
+                            // `/memory` : menu du terminal, absent du SDK ; l'app ouvre sa propre fenêtre.
+                            if (text.trim() === '/memory' && images.length === 0 && quotes.length === 0) return setMemoryOpen(true);
                             send({ type: 'prompt', runId: run.id, text: withQuotes(quotes, text), ...(images.length ? { images } : {}) });
                             clearQuotes(run.id);
                         }}
@@ -111,6 +124,7 @@ export function ChatView({ run, views, actions, panel, subtitle, wide }: Props):
                 )}
             </div>
             {view?.mcp && <McpDialog status={view.mcp} />}
+            {memoryOpen && <MemoryDialog runId={run.id} onClose={() => setMemoryOpen(false)} />}
         </div>
     );
 }

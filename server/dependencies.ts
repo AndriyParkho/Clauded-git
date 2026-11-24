@@ -177,11 +177,65 @@ function add(list: IssueDependency[], dependency: IssueDependency): void {
     list.push(dependency);
 }
 
+interface Inherited {
+    dependsOn: number;
+    source: 'github' | 'text';
+    reason: string;
+}
+
+/**
+ * Dépendances des parentes des issues sélectionnées, que reprennent leurs sous-issues : relations
+ * « blocked by » de GitHub et formulations de leur texte (corps et commentaires). Une parente
+ * sélectionnée est déjà lue (`native`, `issues`) ; les autres le sont ici. Sont écartées la
+ * parente elle-même, sa propre parente (on l'attendrait jusqu'à sa fermeture, qui dépend de ce
+ * travail) et ses sous-issues (son texte les cite comme contenu, pas comme prérequis).
+ */
+async function parentDependencies(repo: Repo, issues: IssueDetail[], native: Map<number, number[]>, warnings: string[]): Promise<Map<number, Inherited[]>> {
+    const result = new Map<number, Inherited[]>();
+    const known = new Map(issues.map((i) => [i.number, i]));
+    const numbers = [...new Set(issues.map((i) => i.parent).filter((p): p is number => p !== null))];
+    const outside = numbers.filter((n) => !known.has(n));
+    if (numbers.length === 0) return result;
+    const [blocked, fetched] = await Promise.all([
+        outside.length === 0
+            ? new Map<number, number[]>()
+            : blockedBy(repo, outside).catch((error: unknown) => {
+                  warnings.push(`Relations « blocked by » des issues parentes non lues : ${String(error)}`);
+                  return new Map<number, number[]>();
+              }),
+        Promise.all(
+            outside.map((n) =>
+                getIssue(repo, n).catch((error: unknown) => {
+                    warnings.push(`Texte de l'issue parente #${n} non lu : ${error instanceof Error ? error.message : String(error)}`);
+                    return null;
+                }),
+            ),
+        ),
+    ]);
+    for (const issue of fetched) if (issue) known.set(issue.number, issue);
+
+    for (const n of numbers) {
+        const parent = known.get(n);
+        const excluded = new Set([n, ...(parent ? [parent.parent, ...parent.subIssues.filter((s) => !s.otherRepo).map((s) => s.number)] : [])]);
+        const list: Inherited[] = [];
+        const push = (dep: Inherited): void => {
+            if (!excluded.has(dep.dependsOn) && !list.some((d) => d.dependsOn === dep.dependsOn)) list.push(dep);
+        };
+        for (const dep of (outside.includes(n) ? blocked : native).get(n) ?? []) push({ dependsOn: dep, source: 'github', reason: `hérité de la parente #${n}, marquée « blocked by #${dep} » sur GitHub` });
+        if (parent) {
+            const text = [parent.body, ...parent.commentList.map((c) => c.body)].join('\n');
+            for (const dep of textDependencies(text).dependsOn) push({ dependsOn: dep, source: 'text', reason: `hérité de la parente #${n}, dont le texte mentionne #${dep} comme prérequis` });
+        }
+        result.set(n, list);
+    }
+    return result;
+}
+
 /**
  * Dépendances entre les issues sélectionnées, et envers des issues/PR hors sélection : relations
  * « blocked by » de GitHub, formulations du texte (« dépend de #12 »…), sur demande l'avis de
  * Claude, et celles héritées de la parente (une sous-issue sans dépendance dans le lot attend ce
- * qui bloque sa parente). Les issues sélectionnées qui sont elles-mêmes parentes sont écartées du
+ * dont dépend sa parente, d'après GitHub ou son texte). Les issues sélectionnées qui sont elles-mêmes parentes sont écartées du
  * lot (`parents`) : on lance leurs sous-issues à part ; leurs dépendances sont gardées.
  */
 export async function analyzeDependencies(repo: Repo, numbers: number[], options: { claude: boolean }): Promise<BatchAnalysis> {
@@ -205,7 +259,7 @@ export async function analyzeDependencies(repo: Repo, numbers: number[], options
     for (const issue of issues) {
         for (const dep of native.get(issue.number) ?? []) note(issue.number, dep, 'github', `#${issue.number} est marquée « blocked by #${dep} » sur GitHub`);
         // Une parente sélectionnée avec ses sous-issues attend qu'elles soient faites.
-        for (const sub of issue.subIssues) if (selected.has(sub.number)) note(issue.number, sub.number, 'subissue', `#${sub.number} est une sous-issue de #${issue.number}`);
+        for (const sub of issue.subIssues) if (!sub.otherRepo && selected.has(sub.number)) note(issue.number, sub.number, 'subissue', `#${sub.number} est une sous-issue de #${issue.number}`);
         const text = [issue.body, ...issue.commentList.map((c) => c.body)].join('\n');
         const found = textDependencies(text);
         for (const dep of found.dependsOn) note(issue.number, dep, 'text', `le texte de #${issue.number} mentionne #${dep} comme prérequis`);
@@ -220,28 +274,29 @@ export async function analyzeDependencies(repo: Repo, numbers: number[], options
         }
     }
 
-    // Héritage : une sous-issue qui ne dépend de rien dans le lot attend ce qui bloque sa parente
-    // (« B bloquée par X » vaut pour les sous-issues de B qui partent les premières).
-    const parentsOutside = [...new Set(issues.map((i) => i.parent).filter((p): p is number => p !== null && !selected.has(p)))];
-    if (parentsOutside.length > 0) {
-        const inherited = await blockedBy(repo, parentsOutside).catch((error: unknown) => {
-            warnings.push(`Relations « blocked by » des issues parentes non lues : ${String(error)}`);
-            return new Map<number, number[]>();
-        });
-        for (const issue of issues) {
-            if (issue.parent === null || selected.has(issue.parent)) continue;
-            if (dependencies.some((d) => d.issue === issue.number && selected.has(d.dependsOn))) continue;
-            for (const dep of inherited.get(issue.parent) ?? []) {
-                if (dep !== issue.number) note(issue.number, dep, 'github', `hérité de la parente #${issue.parent}, marquée « blocked by #${dep} » sur GitHub`);
-            }
-        }
+    // Héritage : une sous-issue qui ne dépend de rien dans le lot attend ce dont dépend sa parente
+    // (« B dépend de X » vaut pour les sous-issues de B qui partent les premières).
+    const inherited = await parentDependencies(repo, issues, native, warnings);
+    for (const issue of issues) {
+        if (issue.parent === null) continue;
+        if (dependencies.some((d) => d.issue === issue.number && selected.has(d.dependsOn))) continue;
+        for (const dep of inherited.get(issue.parent) ?? []) if (dep.dependsOn !== issue.number) note(issue.number, dep.dependsOn, dep.source, dep.reason);
     }
 
     // Parentes sélectionnées : écartées du lot. Ce qui dépend d'elles les attend comme une issue hors
-    // sélection (jusqu'à leur fermeture, puisqu'elles n'ont pas de PR).
+    // sélection (jusqu'à leur fermeture, puisqu'elles n'ont pas de PR). Leurs sous-issues d'autres
+    // dépôts ne sont pas lancées d'ici : elles se lancent à la main, dans leur dépôt.
     const parents = issues
         .filter((i) => i.subIssues.some((sub) => sub.state === 'OPEN'))
-        .map((i) => ({ number: i.number, title: i.title, openSubIssues: i.subIssues.filter((sub) => sub.state === 'OPEN').map((sub) => sub.number) }));
+        .map((i) => {
+            const open = i.subIssues.filter((sub) => sub.state === 'OPEN');
+            return {
+                number: i.number,
+                title: i.title,
+                openSubIssues: open.filter((sub) => !sub.otherRepo).map((sub) => sub.number),
+                otherRepoSubIssues: open.filter((sub) => sub.otherRepo).map((sub) => `${sub.otherRepo}#${sub.number}`),
+            };
+        });
     const parentNumbers = new Set(parents.map((p) => p.number));
     for (const d of dependencies) if (parentNumbers.has(d.dependsOn) && !parentNumbers.has(d.issue)) outside.add(d.dependsOn);
     // Une parente qui « dépend » de ses propres sous-issues : relation sans objet une fois écartée.

@@ -73,15 +73,39 @@ export interface ComposerInput {
 
 export const EMPTY_INPUT: ComposerInput = { text: '', images: [] };
 
+/** Sorte d'un toast : les erreurs restent jusqu'au clic, les réussites et infos partent seules. */
+export type NoticeKind = 'error' | 'success' | 'info';
+
+/** Bouton d'un toast (« Voir la sortie », « Ouvrir »…) ; le toast se ferme après l'action. */
+export interface NoticeAction {
+    label: string;
+    run: () => void;
+}
+
 export interface Notice {
     id: number;
     at: string;
     message: string;
+    kind: NoticeKind;
     runId?: number;
+    action?: NoticeAction;
+    /** Un nouveau toast de même clé remplace le précédent au lieu de s'empiler. */
+    key?: string;
 }
 
+export interface NoticeOptions {
+    /** `error` par défaut. */
+    kind?: NoticeKind;
+    runId?: number;
+    action?: NoticeAction;
+    key?: string;
+}
+
+/** Changement d'état d'un onglet reçu du serveur (jamais au chargement initial). */
+export type RunTransitionListener = (run: Run, previous: Run) => void;
+
 export type Page = 'chat' | 'issues' | 'pulls' | 'specs' | 'repos';
-export type Panel = 'issue' | 'diff' | 'jobs' | 'pr' | 'review' | 'info' | 'spec' | 'versions' | 'plan';
+export type Panel = 'issue' | 'diff' | 'jobs' | 'pr' | 'review' | 'info' | 'spec' | 'versions' | 'plan' | 'report';
 
 export interface PullsState {
     filter: PullFilter;
@@ -154,8 +178,11 @@ interface State {
     setActive(runId: number | null): void;
     setPage(page: Page): void;
     markUnloaded(): void;
-    notify(message: string, runId?: number): void;
+    /** `notify(msg)` ou `notify(msg, runId)` : une erreur ; `notify(msg, { kind: 'success' })` sinon. */
+    notify(message: string, target?: number | NoticeOptions): void;
     dismissNotice(id: number): void;
+    /** Ferme le toast de cette clé, s'il est encore affiché. */
+    dismissNoticeKey(key: string): void;
     setDraft(runId: number, text: string | undefined): void;
     setPanel(runId: number, panel: Panel | null): void;
     setIssues(patch: Partial<IssuesState>): void;
@@ -216,6 +243,16 @@ function withTask(view: RunView, message: SDKMessage): RunView {
 }
 
 let noticeId = 0;
+
+const transitionListeners = new Set<RunTransitionListener>();
+
+/** S'abonne aux changements d'état des onglets ; rend la fonction de désabonnement. */
+export function onRunTransition(listener: RunTransitionListener): () => void {
+    transitionListeners.add(listener);
+    return () => {
+        transitionListeners.delete(listener);
+    };
+}
 
 function upsertJob(list: JobInfo[], job: JobInfo): JobInfo[] {
     const index = list.findIndex((j) => j.id === job.id);
@@ -290,9 +327,23 @@ export const useStore = create<State>((set, get) => ({
             for (const [id, view] of Object.entries(state.views)) views[Number(id)] = { ...view, loaded: false };
             return { views };
         }),
-    notify: (message, runId) =>
-        set((state) => ({ notices: [...state.notices.slice(-9), { id: ++noticeId, at: new Date().toISOString(), message, ...(runId !== undefined ? { runId } : {}) }] })),
+    notify: (message, target) =>
+        set((state) => {
+            const options: NoticeOptions = typeof target === 'number' ? { runId: target } : (target ?? {});
+            const notice: Notice = {
+                id: ++noticeId,
+                at: new Date().toISOString(),
+                message,
+                kind: options.kind ?? 'error',
+                ...(options.runId !== undefined ? { runId: options.runId } : {}),
+                ...(options.action ? { action: options.action } : {}),
+                ...(options.key !== undefined ? { key: options.key } : {}),
+            };
+            const rest = options.key === undefined ? state.notices : state.notices.filter((n) => n.key !== options.key);
+            return { notices: [...rest.slice(-9), notice] };
+        }),
     dismissNotice: (id) => set((state) => ({ notices: state.notices.filter((n) => n.id !== id) })),
+    dismissNoticeKey: (key) => set((state) => (state.notices.some((n) => n.key === key) ? { notices: state.notices.filter((n) => n.key !== key) } : {})),
     setDraft: (runId, text) =>
         set((state) => {
             const drafts = { ...state.drafts };
@@ -334,10 +385,16 @@ export const useStore = create<State>((set, get) => ({
             case 'account':
                 set({ account: message.account });
                 break;
-            case 'run':
+            case 'run': {
+                const previous = state.runs.find((r) => r.id === message.run.id);
                 if (message.run.archived) state.removeRun(message.run.id);
                 else state.upsertRun(message.run);
+                // Comparé à l'état connu : `hello` remplace la liste sans passer par ici.
+                if (previous && !message.run.archived && previous.state !== message.run.state) {
+                    for (const listener of transitionListeners) listener(message.run, previous);
+                }
                 break;
+            }
             case 'runDeleted':
                 state.removeRun(message.runId);
                 break;
@@ -379,7 +436,7 @@ export const useStore = create<State>((set, get) => ({
                 // Un nettoyage (tâche de fond) qui se termine le signale, où que l'on soit dans l'app.
                 const previous = state.jobs[message.job.id];
                 if (previous?.status === 'running' && message.job.status !== 'running' && Object.values(state.cleanupJobs).includes(message.job.id)) {
-                    state.notify(`${message.job.name} : ${message.job.output.trim().split('\n').at(-1) ?? ''}`);
+                    state.notify(`${message.job.name} : ${message.job.output.trim().split('\n').at(-1) ?? ''}`, { kind: message.job.status === 'ok' ? 'success' : 'error' });
                 }
                 // Tous les jobs sont suivis par id ; ceux d'un onglet (runId > 0) vont aussi dans sa vue.
                 set((s) => ({ jobs: { ...s.jobs, [message.job.id]: message.job } }));

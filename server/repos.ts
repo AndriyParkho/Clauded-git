@@ -4,6 +4,7 @@ import { listSessions } from '@anthropic-ai/claude-agent-sdk';
 import { findRepoByPath, findRepoByRemote, insertRepo } from './db.js';
 import { exec } from './exec.js';
 import type { Repo, SessionHistoryItem } from '../shared/protocol.js';
+import { memo } from './memo.js';
 
 export interface RemoteInfo {
     host: string;
@@ -101,7 +102,12 @@ export async function isDirectory(path: string): Promise<boolean> {
 }
 
 /** Sessions Claude Code d'un dépôt (checkout principal et worktrees), les plus récentes d'abord. */
-export async function repoSessions(repo: Repo, limit = 50): Promise<SessionHistoryItem[]> {
+export function repoSessions(repo: Repo, limit = 50): Promise<SessionHistoryItem[]> {
+    // Lit les transcripts sur le disque (worktrees compris) : gardé 15 s, appels simultanés partagés.
+    return memo(`sessions:${repo.id}:${limit}`, 15_000, () => readRepoSessions(repo, limit));
+}
+
+async function readRepoSessions(repo: Repo, limit: number): Promise<SessionHistoryItem[]> {
     const sessions = await listSessions({ dir: repo.path, includeWorktrees: true, limit });
     return sessions.map((s) => ({
         sessionId: s.sessionId,

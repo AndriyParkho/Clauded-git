@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Markdown } from '../Markdown';
 import { buildItems, type Item } from './items';
 import { ToolCard } from './ToolCard';
@@ -58,7 +58,8 @@ function UserBubble({ text, images }: { text: string; images?: ImageAttachment[]
     );
 }
 
-export function ItemView({ item }: { item: Item }): ReactElement | null {
+/** Un élément du fil ; mémoïsé, il ne se redessine pas à chaque fragment de la réponse en cours. */
+export const ItemView = memo(function ItemView({ item }: { item: Item }): ReactElement | null {
     switch (item.kind) {
         case 'user':
             return <UserBubble text={item.text} {...(item.images ? { images: item.images } : {})} />;
@@ -115,7 +116,7 @@ export function ItemView({ item }: { item: Item }): ReactElement | null {
         default:
             return null;
     }
-}
+});
 
 export function MessageList({ view }: { view: RunView }): ReactElement {
     const items = useMemo(() => buildItems(view.messages), [view.messages]);

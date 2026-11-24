@@ -1,5 +1,5 @@
 import type { ReactElement, ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Icon, type IconName } from './Icon';
 
 interface Props {
@@ -21,6 +21,18 @@ interface Props {
     disabled?: boolean;
 }
 
+/** Premier ancêtre qui rogne son contenu (volet, panneau qui défile), sinon la fenêtre. */
+function clipBox(el: HTMLElement): { left: number; right: number } {
+    for (let node = el.parentElement; node && node !== document.body; node = node.parentElement) {
+        const style = getComputedStyle(node);
+        if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+            const box = node.getBoundingClientRect();
+            return { left: Math.max(0, box.left), right: Math.min(window.innerWidth, box.right) };
+        }
+    }
+    return { left: 0, right: window.innerWidth };
+}
+
 /**
  * Menu déroulant : ferme au clic extérieur et sur Échap, flèches haut/bas entre les éléments,
  * focus rendu au bouton à la fermeture.
@@ -40,6 +52,21 @@ export function Menu({ label, icon, title, children, align = 'left', closeOnClic
         // Premier élément focalisé à l'ouverture, pour enchaîner au clavier.
         list.current?.querySelector<HTMLElement>('button:not(:disabled), a[href], select, input')?.focus({ preventScroll: true });
         return () => document.removeEventListener('mousedown', outside);
+    }, [open]);
+
+    // Gardé dans la zone visible : un menu ouvert vers la gauche depuis un bouton en bord de volet
+    // passerait sous le rail (ou serait rogné par le volet).
+    useLayoutEffect(() => {
+        const el = list.current;
+        if (!open || !el) return;
+        el.style.marginLeft = '';
+        const box = el.getBoundingClientRect();
+        const bounds = clipBox(el);
+        const margin = 8;
+        let shift = 0;
+        if (box.left < bounds.left + margin) shift = bounds.left + margin - box.left;
+        else if (box.right > bounds.right - margin) shift = Math.max(bounds.left + margin - box.left, bounds.right - margin - box.right);
+        if (shift !== 0) el.style.marginLeft = `${Math.round(shift)}px`;
     }, [open]);
 
     const close = (): void => {

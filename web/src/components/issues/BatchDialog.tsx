@@ -259,9 +259,10 @@ export function BatchDialog({ repoId, numbers, onAdd, onOpenParent, onClose }: P
                                         <span className="batch-title">{p.title}</span>
                                         <span className="muted">
                                             {p.openSubIssues.length} sous-issue{p.openSubIssues.length > 1 ? 's' : ''} ouverte{p.openSubIssues.length > 1 ? 's' : ''}
+                                            {p.otherRepoSubIssues.length > 0 && ` (+ ${p.otherRepoSubIssues.length} dans d'autres dépôts, à lancer à la main)`}
                                             {deps.length > 0 && ` · après ${deps.map((d) => `#${d.dependsOn}`).join(', ')}`}
                                         </span>
-                                        {onOpenParent && (
+                                        {onOpenParent && p.openSubIssues.length > 0 && (
                                             <button className="small" onClick={() => onOpenParent(p.number, p.openSubIssues)} title="Ouvre le lot de ses sous-issues à la place de celui-ci">
                                                 Implémenter ses sous-issues
                                             </button>

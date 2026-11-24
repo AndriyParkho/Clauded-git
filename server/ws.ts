@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { WebSocket } from 'ws';
 import { batchEvents } from './batch.js';
+import { isEffort } from './config.js';
 import { getRun, listBatchItems, listRepos, listRuns } from './db.js';
 import { jobs } from './jobs.js';
 import { progressEvents } from './progress.js';
@@ -27,6 +28,7 @@ export function wireSessionEvents(): void {
     sessions.on('permission', (event) => broadcast({ type: 'permission', event }));
     sessions.on('commands', (runId, commands) => broadcast({ type: 'commands', runId, commands }));
     sessions.on('models', (runId, models) => broadcast({ type: 'models', runId, models }));
+    sessions.on('reset', (runId) => broadcast({ type: 'replay', runId, ...sessions.replay(runId), jobs: jobs.listForRun(runId) }));
     sessions.on('usage', (usage) => broadcast({ type: 'usage', usage }));
     sessions.on('account', (account) => broadcast({ type: 'account', account }));
     sessions.on('mcp', (status) => broadcast({ type: 'mcp', status }));
@@ -85,6 +87,10 @@ async function handle(message: ClientMessage, send: (message: ServerMessage) => 
             break;
         case 'setModel':
             await sessions.setModel(message.runId, message.model);
+            break;
+        case 'setEffort':
+            if (!isEffort(message.effort)) throw new Error(`effort inconnu : ${String(message.effort)}`);
+            await sessions.setEffort(message.runId, message.effort);
             break;
         case 'mcp':
             await sessions.mcp(message.runId, message.action, message.server);

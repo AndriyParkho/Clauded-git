@@ -82,12 +82,43 @@ dans develop (merge de l'app, retrouvé dans l'historique de `origin/develop`) o
 PR (son commit de merge). État relu à la fin de chaque tour, et toutes les 30 s tant qu'un workflow
 tourne.
 
+## Onglets d'un dépôt
+
+Implémentation d'une issue, PR, résolution de conflits et chat ouvert dans un dépôt partagent le même
+en-tête : panneaux Diff (brouillons de review en plus pour une PR), issue(s), Branche et PR (checks,
+commentaires, « Envoyer les commentaires au chat »), Logs ; menus Commandes (projet du monorepo,
+commandes du profil, commande libre), Git (merges de la base et dans develop ; pour un chat, la
+branche sortie dans son dossier) et Ouvrir (VS Code, Finder, terminaux, Bruno). Une PR ajoute
+« Lancer la review ». Un chat hors dépôt n'a que « Ouvrir ».
+
+« Commit & push » apparaît quand il y a quelque chose à commiter ou à pousser : `git add -A`, message
+écrit par un petit modèle (`commitModel` du profil, `haiku` par défaut) d'après le diff et le style
+des derniers commits, `git commit` (hooks compris), puis `git push` (`-u` la première fois). La
+session n'est pas sollicitée. Sur la branche de base ou d'intégration, l'app demande confirmation.
+
+## Consommation des sessions
+
+- Effort `medium` par défaut (`CLAUDED_GIT_EFFORT` pour changer), au lieu de l'`effortLevel` des
+  réglages Claude Code (souvent `high`). Réglable par onglet dans la barre d'état et la palette ;
+  appliqué au tour suivant, retenu pour l'onglet.
+- Implémentations et résolutions de conflits : seulement les serveurs MCP du `.mcp.json` du dépôt
+  (`implementMcp` du profil : `project`, `none` ou `all`). Les chats, PR et specs gardent tout.
+- Barre d'état : tokens du contexte (vert, orange dès 80 k, rouge dès 150 k ; seuils en tokens,
+  pas en %, la fenêtre pouvant faire 1 M), et au clic ce qui les occupe (skills, CLAUDE.md, prompt
+  système, outils, conversation). « Compacter » (`/compact`) proposé dès 80 k ; « Nouvelle
+  conversation » (ou `/clear`) pour repartir de zéro dans le même onglet.
+- « Envoyer au chat » d'une commande n'envoie que ses 40 dernières lignes et le chemin du log complet
+  (`~/.clauded-git/logs/`), que la session ne lit que si besoin ; idem pour les conflits de merge.
+- Le prompt système des sessions leur demande de déléguer les recherches larges à un sous-agent
+  Explore et de lire gros fichiers et logs par morceaux (pour les nouvelles sessions).
+
 ## Profils de dépôt
 
 Au premier usage d'un dépôt, l'app écrit `~/.clauded-git/profiles/<owner>__<name>.json` avec des
 valeurs devinées (branche de base, `develop` s'il existe, install et scripts d'après le lockfile).
 À ajuster à la main : `branchFormat`, `install`, `copyFiles` (`.env.local`…), `commands` (boutons de
-l'onglet d'implémentation), `reviewSkill`, `instructions` (ajoutées au prompt d'implémentation).
+l'onglet d'implémentation), `reviewSkill`, `selfReviewSkill`, `instructions` (ajoutées au prompt
+d'implémentation), `implementMcp`, `commitModel`.
 
 ## Structure
 

@@ -37,6 +37,14 @@ export interface Profile {
      * `{path}` = le dépôt ou le worktree choisi. Null : pas de bouton Bruno.
      */
     bruno: string | null;
+    /**
+     * Serveurs MCP des sessions d'implémentation (et de résolution de conflits) : `project` (ceux du
+     * `.mcp.json` du dépôt seulement), `none`, ou `all` (comme un chat : compte, plugins, claude.ai).
+     * Moins de serveurs, c'est moins d'instructions et de noms d'outils envoyés à chaque requête.
+     */
+    implementMcp: 'project' | 'none' | 'all';
+    /** Modèle qui écrit le message du bouton « Commit & push » (`haiku`, `sonnet`). */
+    commitModel: string;
 }
 
 const PROFILES_DIR = join(DATA_DIR, 'profiles');
@@ -94,6 +102,8 @@ async function guessProfile(repo: Repo): Promise<Profile> {
         selfReviewSkill: 'code-review:code-review',
         instructions: '',
         // Une collection Bruno dans le dépôt : la fonction `bru-use` du .zshrc la bascule.
+        implementMcp: 'project',
+        commitModel: 'haiku',
         bruno: (await stat(join(repo.path, 'bruno')).then((s) => s.isDirectory()).catch(() => false)) ? 'bru-use {path}' : null,
     };
 }

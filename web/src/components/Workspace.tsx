@@ -4,7 +4,7 @@ import { useStore, type Page } from '../store';
 import { send } from '../ws';
 import { closePane, keepOnlyPane, MAX_PANES, openToRight, paneRatios, prunePanes, putInPane, useUi } from '../ui';
 import { Icon } from './Icon';
-import { RUN_ICON, TabDot } from './Tabs';
+import { intentClass, runIcon, TabDot } from './Tabs';
 import { RunContent } from './RunContent';
 import type { Run } from '../../../shared/protocol';
 
@@ -30,8 +30,8 @@ function PaneBar({ index, run, page, count }: { index: number; run: Run | undefi
         <div className="pane-bar">
             {run ? (
                 <>
-                    <span className="pane-bar-icon">
-                        <Icon name={RUN_ICON[run.type]} size={13} />
+                    <span className={`pane-bar-icon ${intentClass(run)}`}>
+                        <Icon name={runIcon(run)} size={13} />
                         <TabDot run={run} />
                     </span>
                     <span className="pane-bar-title">{run.title}</span>

@@ -1,0 +1,82 @@
+/* ---------------------------------------------------------------------------------------------
+   Visualiseur de diff (DiffView.tsx) : barre d'affichage, mode côte à côte, fichiers vus,
+   coloration syntaxique. Le reste du diff (tableau, arbre) est dans styles.css.
+   Ce fichier peut être chargé avant styles.css : les surcharges passent par `.diff-file …`
+   pour l'emporter sans dépendre de l'ordre.
+   --------------------------------------------------------------------------------------------- */
+
+/* Colonne de droite : barre d'affichage fixe, fichiers défilants dessous */
+.diff-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.diff-toolbar {
+    flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line); font-size: 12px;
+}
+.diff-toolbar .segmented button { padding: 2px 10px; font-size: 12px; }
+
+/* Fichiers vus */
+.diff-tree-seen { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--faint); white-space: nowrap; }
+.diff-tree-seen.done { color: var(--ok); }
+.tree-file.seen { opacity: 0.5; }
+.tree-file.seen:hover, .tree-file.seen.active { opacity: 0.85; }
+.tree-seen { flex: none; font-size: 11px; color: var(--ok); }
+
+/* En-tête de fichier : bouton de dépliage + case « vu » (un champ ne peut pas vivre dans un bouton) */
+.diff-file .diff-file-head { padding: 0; }
+.diff-file-head .diff-file-toggle {
+    flex: 1; min-width: 0; display: flex; gap: 8px; align-items: center; padding: 7px 10px;
+    background: none; border: none; border-radius: 0; color: inherit; font: inherit; text-align: left;
+}
+.diff-file-head .diff-file-toggle:hover { background: none; }
+.diff-file-head .diff-file-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.diff-seen {
+    flex: none; display: flex; align-items: center; gap: 5px; padding: 0 10px 0 4px; align-self: stretch;
+    font-size: 12px; color: var(--dim); cursor: pointer; user-select: none;
+}
+.diff-seen:hover { color: var(--fg); }
+.diff-seen input { margin: 0; }
+.diff-file.seen .diff-seen { color: var(--ok); }
+.diff-file.seen .diff-file-name { color: var(--dim); font-weight: 500; }
+
+/* Fichier ouvert pas encore monté (hors de la zone visible) */
+.diff-placeholder { background: var(--bg); }
+
+/* Côte à côte : couleurs par cellule (une rangée mêle ancien et nouveau) */
+.diff-file .diff-split .diff-num { border-right: 1px solid var(--line); }
+.diff-file .diff-split .diff-num-right { border-left: 1px solid var(--line-strong); }
+.diff-file .diff-split td.del { background: color-mix(in srgb, var(--ko) 8%, transparent); }
+.diff-file .diff-split td.diff-num.del { background: color-mix(in srgb, var(--ko) 14%, transparent); color: color-mix(in srgb, var(--ko) 65%, var(--dim)); }
+.diff-file .diff-split td.diff-sign.del { color: var(--ko); }
+.diff-file .diff-split td.add { background: color-mix(in srgb, var(--ok) 8%, transparent); }
+.diff-file .diff-split td.diff-num.add { background: color-mix(in srgb, var(--ok) 14%, transparent); color: color-mix(in srgb, var(--ok) 65%, var(--dim)); }
+.diff-file .diff-split td.diff-sign.add { color: var(--ok); }
+.diff-file .diff-split td.empty { background: var(--sunken); }
+.diff-file .diff-split td.diff-num.clickable:hover { color: var(--accent); background: var(--accent-soft); }
+
+/* Coloration syntaxique (classes highlight.js), accordée à la palette ardoise */
+.diff-table {
+    --tok-keyword: #C084FC;   /* violet */
+    --tok-string: #86EFAC;    /* vert pâle */
+    --tok-comment: #64748B;   /* gris ardoise */
+    --tok-number: #FDBA74;    /* orange pâle */
+    --tok-type: #5EEAD4;      /* turquoise */
+    --tok-function: #93C5FD;  /* bleu clair */
+    --tok-attr: #7DD3FC;      /* ciel */
+    --tok-tag: #F9A8D4;       /* rose */
+    --tok-meta: #94A3B8;
+}
+.diff-table .hljs-keyword, .diff-table .hljs-doctag, .diff-table .hljs-template-tag { color: var(--tok-keyword); }
+.diff-table .hljs-string, .diff-table .hljs-regexp, .diff-table .hljs-char.escape_ { color: var(--tok-string); }
+.diff-table .hljs-comment, .diff-table .hljs-quote { color: var(--tok-comment); font-style: italic; }
+.diff-table .hljs-number, .diff-table .hljs-literal, .diff-table .hljs-symbol, .diff-table .hljs-bullet { color: var(--tok-number); }
+.diff-table .hljs-type, .diff-table .hljs-built_in, .diff-table .hljs-title.class_, .diff-table .hljs-title.class_.inherited__ { color: var(--tok-type); }
+.diff-table .hljs-title, .diff-table .hljs-title.function_, .diff-table .hljs-section { color: var(--tok-function); }
+.diff-table .hljs-section { font-weight: 600; }
+.diff-table .hljs-attr, .diff-table .hljs-attribute, .diff-table .hljs-property, .diff-table .hljs-variable, .diff-table .hljs-template-variable,
+.diff-table .hljs-selector-class, .diff-table .hljs-selector-id, .diff-table .hljs-selector-attr, .diff-table .hljs-selector-pseudo { color: var(--tok-attr); }
+.diff-table .hljs-tag, .diff-table .hljs-name, .diff-table .hljs-selector-tag { color: var(--tok-tag); }
+.diff-table .hljs-meta, .diff-table .hljs-meta .hljs-keyword { color: var(--tok-meta); }
+.diff-table .hljs-meta .hljs-string { color: var(--tok-string); }
+.diff-table .hljs-subst, .diff-table .hljs-params { color: var(--fg); }
+.diff-table .hljs-emphasis { font-style: italic; }
+.diff-table .hljs-strong { font-weight: 700; }
+.diff-table .hljs-link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }

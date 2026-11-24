@@ -1,4 +1,5 @@
 import { exec } from './exec.js';
+import { forget, memo } from './memo.js';
 import type { Issue, IssueDetail, IssueFilter, IssueRef, IssueState, IssueStatus, PullRequestRef, Repo } from '../shared/protocol.js';
 
 /** Taille d'une page de la liste des issues (le champ `projectItems` alourdit chaque nœud). */
@@ -53,12 +54,13 @@ export async function graphql<T>(query: string, variables: Record<string, string
 // champ « Status » des GitHub Projects où elle est rangée (scope `read:project` du token `gh`).
 const ISSUE_FIELDS = `
     number title state url createdAt updatedAt
+    repository { nameWithOwner }
     author { login }
     assignees(first: 10) { nodes { login } }
     labels(first: 20) { nodes { name color } }
     comments { totalCount }
     parent { number }
-    subIssues(first: 50) { nodes { number title state } }
+    subIssues(first: 50) { nodes { number title state repository { nameWithOwner } } }
     projectItems(first: 5) {
         nodes {
             project { title }
@@ -89,7 +91,8 @@ interface IssueNode {
     commentList?: { nodes: Array<{ author: { login: string } | null; createdAt: string; body: string }> };
     closedByPullRequestsReferences?: { nodes: PullRequestRef[] };
     parent: { number: number } | null;
-    subIssues: { nodes: IssueRef[] };
+    repository: { nameWithOwner: string };
+    subIssues: { nodes: Array<Omit<IssueRef, 'otherRepo'> & { repository: { nameWithOwner: string } }> };
     projectItems?: { nodes: ProjectItemNode[] };
 }
 
@@ -117,7 +120,10 @@ function toSummary(node: IssueNode): IssueSummary {
         labels: node.labels.nodes,
         comments: node.comments.totalCount,
         parent: node.parent?.number ?? null,
-        subIssues: node.subIssues.nodes,
+        subIssues: node.subIssues.nodes.map(({ repository, ...sub }) =>
+            // Une sous-issue peut vivre dans un autre dépôt : son numéro y désigne autre chose.
+            repository.nameWithOwner.toLowerCase() === node.repository.nameWithOwner.toLowerCase() ? sub : { ...sub, otherRepo: repository.nameWithOwner },
+        ),
         status: projectStatus(node),
     };
 }
@@ -155,7 +161,25 @@ export async function listIssues(repo: Repo, filter: IssueFilter, state: IssueSt
     };
 }
 
-export async function getIssue(repo: Repo, number: number): Promise<IssueDetail> {
+/**
+ * Lectures GitHub gardées quelques secondes : à l'ouverture d'une issue ou d'un onglet, plusieurs
+ * routes demandent la même issue, la même PR ou la PR de la même branche en même temps.
+ */
+export const GITHUB_READ_TTL_MS = 10_000;
+
+/** Détail d'une issue (gardé GITHUB_READ_TTL_MS, appels simultanés partagés). */
+export function getIssue(repo: Repo, number: number): Promise<IssueDetail> {
+    return memo(`issue:${repo.id}:${number}`, GITHUB_READ_TTL_MS, () => fetchIssue(repo, number));
+}
+
+/** À appeler après une écriture sur l'issue (branche liée créée…). */
+export function forgetIssue(repo: Repo, number: number): void {
+    forget(`issue:${repo.id}:${number}`);
+}
+
+async function fetchIssue(repo: Repo, number: number): Promise<IssueDetail> {
+    // Les branches liées viennent d'un autre appel `gh` : lancé en même temps que la requête GraphQL.
+    const branches = linkedBranches(repo, number);
     const data = await graphql<{ repository: { issue: IssueNode } }>(
         `query($owner: String!, $name: String!, $number: Int!) {
             repository(owner: $owner, name: $name) {
@@ -174,7 +198,7 @@ export async function getIssue(repo: Repo, number: number): Promise<IssueDetail>
         ...toSummary(node),
         body: node.body ?? '',
         commentList: (node.commentList?.nodes ?? []).map((c) => ({ author: c.author?.login ?? 'ghost', createdAt: c.createdAt, body: c.body })),
-        linkedBranches: await linkedBranches(repo, number),
+        linkedBranches: await branches,
         pullRequests: node.closedByPullRequestsReferences?.nodes ?? [],
     };
 }
@@ -192,10 +216,16 @@ export async function linkedBranches(repo: Repo, number: number): Promise<string
 /** Crée côté GitHub une branche liée à l'issue, depuis une branche distante. */
 export async function createLinkedBranch(repo: Repo, number: number, name: string, base: string): Promise<void> {
     const result = await exec('gh', ['issue', 'develop', String(number), '--repo', repoSlug(repo), '--name', name, '--base', base]);
+    forgetIssue(repo, number);
     if (result.code !== 0) throw new Error(`gh issue develop a échoué : ${result.stderr.trim() || result.stdout.trim()}`);
 }
 
-export async function pullRequestForBranch(repo: Repo, branch: string): Promise<PullRequestRef | undefined> {
+/** PR (ouverte ou non) dont la branche est la tête ; gardée GITHUB_READ_TTL_MS. */
+export function pullRequestForBranch(repo: Repo, branch: string): Promise<PullRequestRef | undefined> {
+    return memo(`branch-pr:${repo.id}:${branch}`, GITHUB_READ_TTL_MS, () => fetchPullRequestForBranch(repo, branch));
+}
+
+async function fetchPullRequestForBranch(repo: Repo, branch: string): Promise<PullRequestRef | undefined> {
     const list = await gh<PullRequestRef[]>(['pr', 'list', '--repo', repoSlug(repo), '--head', branch, '--state', 'all', '--limit', '1', '--json', 'number,url,title,state,isDraft,baseRefName,headRefName']);
     return list[0];
 }
@@ -206,7 +236,7 @@ export function issueAsContext(repo: Repo, issue: IssueDetail): string {
     if (issue.labels.length) lines.push(`Labels : ${issue.labels.map((l) => l.name).join(', ')}`, '');
     lines.push(issue.body.trim() || '(pas de description)');
     if (issue.subIssues.length) {
-        lines.push('', '## Sous-issues', ...issue.subIssues.map((s) => `- #${s.number} ${s.title} (${s.state.toLowerCase()})`));
+        lines.push('', '## Sous-issues', ...issue.subIssues.map((s) => `- ${s.otherRepo ?? ''}#${s.number} ${s.title} (${s.state.toLowerCase()})`));
     }
     if (issue.commentList.length) {
         lines.push('', '## Commentaires');

@@ -1,5 +1,5 @@
 import type { ReactElement } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useStore } from '../store';
 import { Menu, MenuLabel } from './Menu';
@@ -72,6 +72,16 @@ function MergeButton({ label, confirm, title, done, start, disabled }: MergeButt
     const [showOutput, setShowOutput] = useState(false);
     const job = useStore((s) => (jobId ? s.jobs[jobId] : undefined));
     const running = starting || job?.status === 'running';
+
+    // Fin du merge lancé ici : signalée une fois par job, le menu Git a pu être refermé entre-temps.
+    const reported = useRef<string | undefined>(undefined);
+    useEffect(() => {
+        if (!job || job.status === 'running' || reported.current === job.id) return;
+        reported.current = job.id;
+        const action = { label: 'Voir la sortie', run: () => setShowOutput(true) };
+        if (job.status === 'ok') notify(`✓ ${done}`, { kind: 'success', action });
+        else notify(`Échec du merge : ${job.name}`, { kind: 'error', action });
+    }, [job, done, notify]);
 
     const run = async (): Promise<void> => {
         if (!window.confirm(confirm)) return;

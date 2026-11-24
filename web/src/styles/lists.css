@@ -1,0 +1,36 @@
+/* ---------------------------------------------------------------------------------------------
+   Pages Issues et Pull requests : barre de filtres, liste au clavier, actions du détail
+   --------------------------------------------------------------------------------------------- */
+
+/* Barre de filtres : dépôt, sélecteurs discrets, recherche, rafraîchir en icône. */
+.list-toolbar { gap: 8px; padding: 6px 12px 6px 16px; min-height: 44px; }
+.list-toolbar > select { padding: 3px 6px; font-size: 12.5px; max-width: 220px; }
+.list-toolbar .batch-bar { font-size: 12.5px; }
+
+.list-search { position: relative; display: inline-flex; align-items: center; }
+.list-search .icon { position: absolute; left: 8px; color: var(--faint); pointer-events: none; }
+.list-search input { width: 190px; padding: 3px 8px 3px 28px; font-size: 12.5px; transition: border-color var(--ease), box-shadow var(--ease), width var(--ease); }
+.list-search input:focus, .list-search input:not(:placeholder-shown) { width: 240px; }
+.list-search input::-webkit-search-cancel-button { cursor: pointer; }
+
+.list-refresh.loading .icon { animation: spin 0.9s linear infinite; }
+.list-refresh:disabled { opacity: 0.8; }
+.list-refresh:disabled:hover { background: transparent; border-color: transparent; }
+
+/* Liste : une seule étape de tabulation (la liste), la ligne active suit la sélection. */
+.issues-list[role="listbox"]:focus-visible { outline: none; }
+.issues-list[role="listbox"]:focus-visible:not(:has([aria-selected="true"])) { box-shadow: inset 0 0 0 2px var(--accent); }
+.issues-list .issue-line[role="option"] { cursor: pointer; scroll-margin-top: 64px; }
+.issues-list .issue-row { cursor: pointer; color: inherit; }
+.issues-list:focus .issue-line[aria-selected="true"],
+.issues-list .issue-line[aria-selected="true"]:focus-within { box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent); }
+.issues-list .pull-line { scroll-margin-top: 40px; }
+.issues-list .pull-line .issue-row { padding-left: 16px; }
+.list-empty { padding: 24px 16px; text-align: center; }
+
+/* Détail : action principale à gauche, menus Git / Ouvrir à droite. */
+.issues-detail-bar .icon-button { width: 26px; height: 26px; text-decoration: none; }
+.issues-detail .issue-actions { gap: 6px; }
+.issues-detail .issue-actions .menu-items { left: auto; right: 0; }
+.issues-detail .issue-actions .menu-row select { max-width: 320px; }
+.issues-detail .issue-actions .check { white-space: nowrap; }

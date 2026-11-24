@@ -6,7 +6,7 @@ export const MAX_PANES = 4;
 
 /**
  * État d'interface local au navigateur, gardé d'une visite à l'autre : rail replié, largeurs choisies
- * à la souris, volets ouverts côte à côte et leurs proportions.
+ * à la souris, volets ouverts côte à côte et leurs proportions, onglets épinglés et leur ordre dans le rail.
  *
  * Volets : l'indice 0 est le volet principal (la page ou l'onglet actif du store) ; les indices 1…n
  * sont les onglets de `panes`, ouverts à sa droite.
@@ -23,6 +23,12 @@ interface UiState {
     ratios: number[];
     /** Volet qui reçoit les onglets choisis dans le rail ou la palette. */
     focusedPane: number;
+    /** Onglets épinglés en tête du rail, par id de run. */
+    pinnedRuns: number[];
+    /** Ordre des onglets choisi par glisser-déposer dans le rail ; les absents vont à la fin de leur groupe. */
+    runOrder: number[];
+    /** Filtre « À toi » du rail : seulement les onglets qui attendent une réponse (non gardé). */
+    waitingOnly: boolean;
     toggleRail(): void;
     setPalette(open: boolean): void;
     setShortcuts(open: boolean): void;
@@ -30,6 +36,11 @@ interface UiState {
     resetSize(key: string): void;
     focusPane(index: number): void;
     setRatios(ratios: number[]): void;
+    togglePin(runId: number): void;
+    setRunOrder(order: number[]): void;
+    setWaitingOnly(on: boolean): void;
+    /** Oublie épingles et ordre des onglets qui ne sont plus ouverts. */
+    pruneRunPrefs(runIds: number[]): void;
 }
 
 function read<T>(key: string, fallback: T): T {
@@ -57,6 +68,9 @@ export const useUi = create<UiState>((set, get) => ({
     panes: read<number[]>('clauded.panes', []),
     ratios: read<number[]>('clauded.ratios', []),
     focusedPane: 0,
+    pinnedRuns: read<number[]>('clauded.pinnedRuns', []),
+    runOrder: read<number[]>('clauded.runOrder', []),
+    waitingOnly: false,
     toggleRail: () => {
         const next = !get().railCollapsed;
         write('clauded.railCollapsed', next);
@@ -80,6 +94,31 @@ export const useUi = create<UiState>((set, get) => ({
     setRatios: (ratios) => {
         write('clauded.ratios', ratios);
         set({ ratios });
+    },
+    togglePin: (runId) => {
+        const current = get().pinnedRuns;
+        const pinnedRuns = current.includes(runId) ? current.filter((id) => id !== runId) : [...current, runId];
+        write('clauded.pinnedRuns', pinnedRuns);
+        set({ pinnedRuns });
+    },
+    setRunOrder: (runOrder) => {
+        write('clauded.runOrder', runOrder);
+        set({ runOrder });
+    },
+    setWaitingOnly: (on) => set({ waitingOnly: on }),
+    pruneRunPrefs: (runIds) => {
+        const open = new Set(runIds);
+        const { pinnedRuns, runOrder } = get();
+        const pinned = pinnedRuns.filter((id) => open.has(id));
+        const order = runOrder.filter((id) => open.has(id));
+        if (pinned.length !== pinnedRuns.length) {
+            write('clauded.pinnedRuns', pinned);
+            set({ pinnedRuns: pinned });
+        }
+        if (order.length !== runOrder.length) {
+            write('clauded.runOrder', order);
+            set({ runOrder: order });
+        }
     },
 }));
 

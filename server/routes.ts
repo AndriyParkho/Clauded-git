@@ -6,10 +6,13 @@ import { ARTIFACT_CSP, listArtifacts, readArtifact } from './artifacts.js';
 import { runLinks } from './links.js';
 import { brunoState, switchBruno } from './bruno.js';
 import { listCleanup, startCleanup } from './cleanup.js';
+import { commitAndPush } from './commit.js';
+import { jobOutputForPrompt } from './joblog.js';
 import { analyzeDependencies } from './dependencies.js';
 import { diffAgainstBase } from './git.js';
 import { listIssues, pullRequestForBranch } from './github.js';
-import { existingBranchForIssue, issueBranch, issueDetail, startBranchChat, mergeBaseInto, mergeIntegration, pullBranch, resumeIssueSession, runInstall, runMergeSource, runProfileCommand, runBase, runProjects, runShell, runWorktreeInfo, startImplement, startIssueChat, startMergeResolution } from './implement.js';
+import { chatBranch, existingBranchForIssue, issueBranch, issueDetail, startBranchChat, mergeBaseInto, mergeIntegration, pullBranch, resumeIssueSession, runInstall, runMergeSource, runProfileCommand, runBase, runProjects, runShell, runWorktreeInfo, startImplement, startIssueChat, startMergeResolution } from './implement.js';
+import { readReport, publishReport, startFix, startIntentChat, type NewIntentChat } from './investigation.js';
 import { jobs } from './jobs.js';
 import { openIn } from './open.js';
 import { openPr, prDetail, sendReviewComments, startReview } from './pr.js';
@@ -21,6 +24,7 @@ import { sessions } from './sessions/manager.js';
 import { listSkills } from './skills.js';
 import { createPlanIssues, generatePlan, getPlan, importPlanFile, readSpec, specVersionContent, specWatcher, startSpec, updatePlan, type NewSpec } from './spec.js';
 import { broadcast } from './ws.js';
+import { memoryInfo, openMemoryFile } from './memory.js';
 import type { IssueFilter, IssueState, OpenApp, PullFilter, Repo, RepoIssues, RepoPulls, ReviewDraft, ReviewEvent, ReviewState, RunType, SpecIssue } from '../shared/protocol.js';
 
 interface CreateRunBody {
@@ -175,6 +179,16 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     app.post<{ Params: { id: string; number: string } }>('/api/repos/:id/issues/:number/chat', async (request, reply) => {
         const repo = repoOr404(request.params.id, reply);
         return repo && startIssueChat(repo, Number(request.params.number));
+    });
+
+    /** Chat avec une intention (investigation, question), lié ou non à une issue ou une PR. */
+    app.post<{ Params: { id: string }; Body: NewIntentChat }>('/api/repos/:id/intent-chat', async (request, reply) => {
+        const repo = repoOr404(request.params.id, reply);
+        if (!repo) return;
+        const body = request.body;
+        if (body?.intent !== 'investigation' && body?.intent !== 'question') return reply.code(400).send({ error: 'intention inconnue' });
+        if (body.env !== undefined && body.env !== 'prod' && body.env !== 'prelive') return reply.code(400).send({ error: 'environnement inconnu' });
+        return startIntentChat(repo, body);
     });
 
     app.post<{ Params: { id: string; number: string }; Body: { planMode?: boolean; opId?: string } }>('/api/repos/:id/issues/:number/implement', async (request, reply) => {
@@ -365,6 +379,29 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         return getRun(run.id);
     });
 
+    // Rapport d'une investigation : lecture, publication sur GitHub, passage au correctif.
+    app.get<{ Params: { id: string } }>('/api/runs/:id/report', async (request) => readReport(Number(request.params.id)));
+    app.get<{ Params: { id: string } }>('/api/runs/:id/memory', async (request) => memoryInfo(Number(request.params.id)));
+    app.post<{ Params: { id: string }; Body: { path: string } }>('/api/runs/:id/memory/open', async (request, reply) => {
+        if (!request.body?.path) return reply.code(400).send({ error: 'chemin manquant' });
+        try {
+            await openMemoryFile(Number(request.params.id), request.body.path);
+        } catch (error) {
+            return reply.code(400).send({ error: String(error instanceof Error ? error.message : error) });
+        }
+        return { ok: true };
+    });
+
+    app.post<{ Params: { id: string } }>('/api/runs/:id/report/publish', async (request, reply) => {
+        try {
+            return await publishReport(Number(request.params.id));
+        } catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
+
+    app.post<{ Params: { id: string }; Body: { opId?: string } }>('/api/runs/:id/report/fix', async (request) => startFix(Number(request.params.id), request.body?.opId));
+
     app.post<{ Params: { id: string } }>('/api/runs/:id/open', async (request, reply) => {
         const run = getRun(Number(request.params.id));
         if (!run) return reply.code(404).send({ error: 'onglet introuvable' });
@@ -381,6 +418,7 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     app.patch<{ Params: { id: string }; Body: { title?: string } }>('/api/runs/:id', async (request, reply) => {
         const run = updateRun(Number(request.params.id), { ...(request.body?.title ? { title: request.body.title } : {}) });
         if (!run) return reply.code(404).send({ error: 'onglet introuvable' });
+        sessions.notifyRun(run.id); // le nouveau titre arrive dans tous les navigateurs ouverts
         return run;
     });
 
@@ -442,6 +480,45 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
         return run && repo && runInstall(repo, run);
     });
 
+    /** Commit de tout ce qui est modifié (message écrit par un petit modèle) puis push de la branche. */
+    app.post<{ Params: { id: string }; Body: { allowProtected?: boolean } }>('/api/runs/:id/commit-push', async (request, reply) => {
+        const { run, repo } = runAndRepo(request.params.id, reply);
+        if (!run || !repo) return;
+        try {
+            return await commitAndPush(repo, run, { allowProtected: Boolean(request.body?.allowProtected) });
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const protectedBranch = /^protected:(.+)$/.exec(message)?.[1];
+            if (protectedBranch) return reply.code(409).send({ error: `La branche courante est ${protectedBranch} (base ou intégration).`, protected: protectedBranch });
+            return reply.code(400).send({ error: message });
+        }
+    });
+
+    /** Nouvelle conversation dans l'onglet (comme `/clear`). */
+    app.post<{ Params: { id: string } }>('/api/runs/:id/reset', async (request, reply) => {
+        const run = getRun(Number(request.params.id));
+        if (!run) return reply.code(404).send({ error: 'onglet introuvable' });
+        try {
+            return await sessions.reset(run.id);
+        } catch (error) {
+            return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
+
+    /** Sortie d'une commande envoyée au chat de son onglet : la fin, et le chemin du log complet. */
+    app.post<{ Params: { id: string } }>('/api/jobs/:id/send', async (request, reply) => {
+        const job = jobs.get(request.params.id);
+        if (!job) return reply.code(404).send({ error: 'commande introuvable (le serveur a redémarré depuis ?)' });
+        if (job.runId <= 0) return reply.code(400).send({ error: 'commande lancée hors onglet' });
+        const where = job.dir ? ` (dans \`${job.dir}\`)` : '';
+        const intro =
+            job.status === 'failed'
+                ? `La commande « ${job.name} »${where} lancée par l'app a échoué (code ${job.code}). Analyse la sortie, corrige, et relance ce qu'il faut.`
+                : `Sortie de la commande « ${job.name} »${where} lancée par l'app.`;
+        await sessions.prompt(job.runId, `${intro}\n\n${await jobOutputForPrompt(job)}`);
+        return { ok: true };
+    });
+
     app.post<{ Params: { id: string } }>('/api/jobs/:id/stop', async (request, reply) => {
         if (!jobs.stop(request.params.id)) return reply.code(409).send({ error: 'cette commande ne tourne plus' });
         return { ok: true };
@@ -492,7 +569,8 @@ export async function registerRoutes(app: FastifyInstance): Promise<void> {
     app.get<{ Params: { id: string } }>('/api/runs/:id/pull', async (request, reply) => {
         const { run, repo } = runAndRepo(request.params.id, reply);
         if (!run || !repo) return;
-        const number = run.prNumber ?? (run.branch ? (await pullRequestForBranch(repo, run.branch).catch(() => undefined))?.number : undefined);
+        const branch = run.branch ?? (await chatBranch(repo, run));
+        const number = run.prNumber ?? (branch ? (await pullRequestForBranch(repo, branch).catch(() => undefined))?.number : undefined);
         if (number === undefined) return { pull: null };
         return { pull: await getPull(repo, number) };
     });

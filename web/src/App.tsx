@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { Rail } from './components/Rail';
 import { CommandPalette } from './components/CommandPalette';
 import { ShortcutsDialog, useShortcuts } from './components/Shortcuts';
+import { NewIntentDialog } from './components/NewIntentDialog';
 import { IssuesPage } from './components/issues/IssuesPage';
 import { PullsPage } from './components/pulls/PullsPage';
 import { ReposPage } from './components/ReposPage';
@@ -10,6 +11,8 @@ import { RunContent } from './components/RunContent';
 import { SpecsPage } from './components/spec/SpecsPage';
 import { Workspace } from './components/Workspace';
 import { ProgressOverlay } from './components/Progress';
+import { Toasts } from './components/Toasts';
+import { useAttention } from './attention';
 import { activeRun, useStore } from './store';
 import { send } from './ws';
 
@@ -18,9 +21,8 @@ export function App(): ReactElement {
     const run = useStore(activeRun);
     const view = useStore((s) => (run ? s.views[run.id] : undefined));
     const connected = useStore((s) => s.connected);
-    const notices = useStore((s) => s.notices);
-    const dismiss = useStore((s) => s.dismissNotice);
     useShortcuts();
+    useAttention();
 
     // Un onglet affiché pour la première fois (ou après reconnexion) est rejoué depuis le serveur.
     useEffect(() => {
@@ -42,18 +44,10 @@ export function App(): ReactElement {
             </main>
             <CommandPalette />
             <ShortcutsDialog />
+            <NewIntentDialog />
             <ProgressOverlay />
             {!connected && <div className="banner">Serveur injoignable, reconnexion…</div>}
-            {notices.length > 0 && (
-                <div className="notices" role="status" aria-live="polite">
-                    {notices.map((n) => (
-                        <div key={n.id} className="notice" onClick={() => dismiss(n.id)} title="Cliquer pour fermer">
-                            {n.runId !== undefined ? `#${n.runId} · ` : ''}
-                            {n.message}
-                        </div>
-                    ))}
-                </div>
-            )}
+            <Toasts />
         </div>
     );
 }

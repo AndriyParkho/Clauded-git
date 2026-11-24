@@ -2,7 +2,6 @@ import type { ReactElement } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, type Profile, type ProjectsInfo } from '../../api';
 import { useStore } from '../../store';
-import { send } from '../../ws';
 import { useResolveMerge } from '../MergeIntegration';
 import { Icon } from '../Icon';
 import { Menu, MenuLabel, MenuSeparator } from '../Menu';
@@ -58,7 +57,7 @@ function useProject(run: Run): { info: ProjectsInfo | undefined; project: string
 
 function ProjectSelect({ info, project, onChange, onReload }: { info: ProjectsInfo | undefined; project: string; onChange: (p: string) => void; onReload: () => void }): ReactElement {
     if (!info) return <span className="muted small-text">projets…</span>;
-    if (info.projects.length <= 1) return <span className="muted small-text" title="Pas de workspaces : les commandes tournent à la racine du worktree">racine</span>;
+    if (info.projects.length <= 1) return <span className="muted small-text" title="Pas de workspaces : les commandes tournent à la racine du dossier">racine</span>;
     const touched = info.touched.filter((t) => t.path !== '.');
     const others = info.projects.filter((p) => p !== '.' && !touched.some((t) => t.path === p));
     return (
@@ -123,7 +122,7 @@ function CustomCommand({ repoId, project, onRun }: { repoId: number | null; proj
                 </button>
             </form>
             <div className="muted command-where">
-                dans <span className="mono">{project === '.' ? 'la racine du worktree' : project}</span> (zsh -lc)
+                dans <span className="mono">{project === '.' ? 'la racine du dossier' : project}</span> (zsh -lc)
             </div>
             {recent.length > 0 && (
                 <div className="command-recent">
@@ -197,7 +196,7 @@ export function CommandsMenu({ run, jobs, onShowJobs }: { run: Run; jobs: JobInf
                 </button>
             ))}
             {profile?.install && (
-                <button role="menuitem" onClick={() => void launch(() => api.install(run.id))} title={`${profile.install} (à la racine du worktree)`}>
+                <button role="menuitem" onClick={() => void launch(() => api.install(run.id))} title={`${profile.install} (à la racine du dossier)`}>
                     <Icon name="play" size={12} /> Install
                     <span className="menu-hint mono">{profile.install}</span>
                 </button>
@@ -239,11 +238,13 @@ export function JobsPanel({ run, jobs }: { run: Run; jobs: JobInfo[] }): ReactEl
     const ordered = [...jobs].reverse();
     const fullJob = jobs.find((j) => j.id === full);
 
-    const sendToChat = (job: JobInfo): void => {
-        const tail = job.output.slice(-8000);
-        const where = job.dir ? ` (dans \`${job.dir}\`)` : '';
-        const text = job.status === 'failed' ? `La commande « ${job.name} »${where} lancée par l'app a échoué (code ${job.code}). Analyse la sortie ci-dessous, corrige, et relance ce qu'il faut.` : `Sortie de la commande « ${job.name} »${where} lancée par l'app :`;
-        send({ type: 'prompt', runId: run.id, text: `${text}\n\n\`\`\`\n${tail}\n\`\`\`` });
+    // La sortie complète part dans un fichier ; le chat n'en reçoit que la fin et le chemin.
+    const sendToChat = async (job: JobInfo): Promise<void> => {
+        try {
+            await api.sendJob(job.id);
+        } catch (error) {
+            notify(String(error), run.id);
+        }
     };
 
     const stop = async (job: JobInfo): Promise<void> => {
@@ -274,7 +275,7 @@ export function JobsPanel({ run, jobs }: { run: Run; jobs: JobInfo[] }): ReactEl
                                 ■ Arrêter
                             </button>
                         )}
-                        <button className="small" disabled={job.status === 'running' || run.state === 'closed'} onClick={() => sendToChat(job)} title="Envoie la fin de la sortie à la session (8000 derniers caractères)">
+                        <button className="small" disabled={job.status === 'running' || run.state === 'closed'} onClick={() => void sendToChat(job)} title="Envoie à la session la fin de la sortie (40 dernières lignes) et le chemin du log complet, qu'elle ne lit que si besoin">
                             Envoyer au chat
                         </button>
                         <button className="small" onClick={() => setFull(job.id)} title="Afficher la sortie en grand">

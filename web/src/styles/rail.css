@@ -1,0 +1,45 @@
+/* ---------------------------------------------------------------------------------------------
+   Rail : filtre « À toi », section des épinglés, renommage en place, réordonnancement au glisser,
+   menu contextuel d'un onglet. Chargé avant styles.css : sélecteurs un cran plus précis.
+   --------------------------------------------------------------------------------------------- */
+
+/* Badge « N à toi » devenu bouton bascule. */
+.rail-section button.rail-waiting { display: inline-flex; align-items: center; gap: 3px; border: 1px solid var(--accent); cursor: pointer; }
+.rail-section button.rail-waiting:hover { background: color-mix(in srgb, var(--accent) 85%, var(--fg-strong)); border-color: var(--accent); }
+.rail-section button.rail-waiting.on { box-shadow: 0 0 0 2px var(--accent-soft); }
+.rail-section button.rail-waiting .icon { margin-right: -3px; }
+.rail-tabs .rail-empty button.link { font-size: inherit; }
+
+/* Épinglés : en tête, séparés des groupes par dépôt (un filet en mode replié, sans titre). */
+.rail-tabs .rail-group-head { display: flex; align-items: center; gap: 5px; }
+.rail-group.pinned .rail-group-head { color: var(--dim); }
+.rail-group.pinned .rail-group-head .icon { flex: none; color: var(--faint); }
+.rail.collapsed .rail-group.pinned:not(:last-child) { padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+
+/* Renommage en place : le champ prend la place du titre et de la seconde ligne. */
+.rail-tab.editing .rail-tab-main { align-items: center; }
+.rail-tab.editing .rail-tab-icon { margin-top: 0; }
+.rail-tab .rail-tab-rename { flex: 1; min-width: 0; padding: 3px 6px; font-size: 13px; line-height: 1.3; }
+
+/* Actions visibles tant que le menu de l'onglet est ouvert. */
+.rail-tab.menu-open .rail-tab-actions { opacity: 1; }
+.rail-tab.menu-open { background: var(--hover); }
+.rail-tab.active.menu-open { background: var(--user); }
+
+/* Glisser pour réordonner : l'onglet saisi s'estompe, un trait marque l'endroit du dépôt. */
+.rail-tabs .rail-tab.dragging { opacity: 0.45; }
+.rail-tabs.reordering .rail-tab-actions { visibility: hidden; }
+.rail-tabs .rail-tab.drop-before::before,
+.rail-tabs .rail-tab.drop-after::after {
+    content: ''; position: absolute; left: 4px; right: 4px; height: 2px; border-radius: 1px; background: var(--accent);
+    box-shadow: 0 0 0 1px var(--panel); pointer-events: none; z-index: 1;
+}
+.rail-tabs .rail-tab.drop-before::before { top: -2px; }
+.rail-tabs .rail-tab.drop-after::after { bottom: -2px; }
+
+/* Menu contextuel d'un onglet : flottant à la position demandée, hors de la liste qui défile. */
+.menu-items.rail-tab-menu { position: fixed; z-index: 60; min-width: 210px; }
+.menu-items.rail-tab-menu .menu-label { max-width: 260px; }
+.menu-items.rail-tab-menu kbd { color: var(--faint); font-size: 11px; }
+.menu-items.rail-tab-menu .rail-tab-menu-close:hover:not(:disabled) { color: var(--fg-strong); }
+.menu-items.rail-tab-menu .rail-tab-menu-close .icon { color: var(--dim); }

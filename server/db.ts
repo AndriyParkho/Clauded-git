@@ -1,7 +1,7 @@
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from 'node:sqlite';
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import type { EffortLevel, PermissionMode } from '@anthropic-ai/claude-agent-sdk';
 import { DB_PATH } from './config.js';
-import type { BatchItem, DraftLabel, InstallStatus, Repo, ReviewDraft, ReviewEvent, Run, RunState, RunType } from '../shared/protocol.js';
+import type { BatchItem, DraftLabel, InstallStatus, InvestigationEnv, Repo, ReviewDraft, ReviewEvent, Run, RunIntent, RunState, RunType } from '../shared/protocol.js';
 
 export const db = new DatabaseSync(DB_PATH);
 
@@ -109,6 +109,10 @@ const RUN_MIGRATIONS: Array<[column: string, definition: string]> = [
     ['archived', 'INTEGER NOT NULL DEFAULT 0'],
     ['pr_number', 'INTEGER'],
     ['spec_path', 'TEXT'],
+    ['effort', 'TEXT'],
+    ['intent', 'TEXT'],
+    ['env', 'TEXT'],
+    ['report_url', 'TEXT'],
 ];
 const runColumns = new Set(db.prepare('PRAGMA table_info(run)').all().map((row) => String(row.name)));
 for (const [column, definition] of RUN_MIGRATIONS) {
@@ -191,6 +195,7 @@ function toRun(row: Row): Run {
         state: text(row.state) as RunState,
         model: str(row.model),
         permissionMode: str(row.permission_mode) as PermissionMode | null,
+        effort: str(row.effort) as EffortLevel | null,
         costUsd: num(row.cost_usd),
         issueNumber: numOrNull(row.issue_number),
         prNumber: numOrNull(row.pr_number),
@@ -202,6 +207,9 @@ function toRun(row: Row): Run {
         lastError: str(row.last_error),
         archived: num(row.archived) === 1,
         specPath: str(row.spec_path),
+        intent: str(row.intent) as RunIntent | null,
+        env: str(row.env) as InvestigationEnv | null,
+        reportUrl: str(row.report_url),
         createdAt: text(row.created_at),
         updatedAt: text(row.updated_at),
     };
@@ -231,14 +239,17 @@ export interface NewRun {
     worktree?: string | null;
     installStatus?: InstallStatus | null;
     specPath?: string | null;
+    intent?: RunIntent | null;
+    env?: InvestigationEnv | null;
+    effort?: EffortLevel | null;
 }
 
 export function insertRun(run: NewRun): Run {
     const at = now();
     const result = db
         .prepare(
-            `INSERT INTO run (repo_id, type, cwd, title, session_id, state, permission_mode, issue_number, pr_number, branch, base_branch, worktree, install_status, spec_path, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO run (repo_id, type, cwd, title, session_id, state, permission_mode, issue_number, pr_number, branch, base_branch, worktree, install_status, spec_path, intent, env, effort, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'closed', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
             run.repoId,
@@ -254,6 +265,9 @@ export function insertRun(run: NewRun): Run {
             run.worktree ?? null,
             run.installStatus ?? null,
             run.specPath ?? null,
+            run.intent ?? null,
+            run.env ?? null,
+            run.effort ?? null,
             at,
             at,
         );
@@ -266,6 +280,7 @@ const RUN_COLUMNS: Partial<Record<keyof Run, string>> = {
     state: 'state',
     model: 'model',
     permissionMode: 'permission_mode',
+    effort: 'effort',
     costUsd: 'cost_usd',
     issueNumber: 'issue_number',
     prNumber: 'pr_number',
@@ -276,11 +291,18 @@ const RUN_COLUMNS: Partial<Record<keyof Run, string>> = {
     installStatus: 'install_status',
     lastError: 'last_error',
     archived: 'archived',
+    reportUrl: 'report_url',
 };
 
 /** L'onglet d'implémentation d'une issue, s'il existe. */
 export function findImplementRun(repoId: number, issueNumber: number): Run | undefined {
     const row = db.prepare("SELECT * FROM run WHERE repo_id = ? AND issue_number = ? AND type = 'implement' ORDER BY created_at DESC").get(repoId, issueNumber);
+    return row ? toRun(row) : undefined;
+}
+
+/** Le dernier onglet d'implémentation sorti sur une branche (celle d'une PR, par exemple). */
+export function findImplementRunByBranch(repoId: number, branch: string): Run | undefined {
+    const row = db.prepare("SELECT * FROM run WHERE repo_id = ? AND branch = ? AND type = 'implement' ORDER BY archived, created_at DESC").get(repoId, branch);
     return row ? toRun(row) : undefined;
 }
 

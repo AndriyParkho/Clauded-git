@@ -207,11 +207,19 @@ export function IssueBody({ repoId, number, onSelect, actions, compact }: Props)
             {issue.subIssues.length > 0 && (
                 <div className="sub-issues">
                     <div className="sidebar-section">Sous-issues ({issue.subIssues.filter((s) => s.state === 'CLOSED').length}/{issue.subIssues.length} fermées)</div>
-                    {issue.subIssues.map((sub) => (
-                        <button key={sub.number} className="link sub-issue" onClick={() => onSelect?.(sub.number)}>
-                            <span className={`badge ${sub.state === 'OPEN' ? 'open' : 'closed'}`} />#{sub.number} {sub.title}
-                        </button>
-                    ))}
+                    {issue.subIssues.map((sub) =>
+                        // Dans un autre dépôt : son numéro n'a pas de sens ici, on l'ouvre sur GitHub.
+                        sub.otherRepo ? (
+                            <a key={`${sub.otherRepo}#${sub.number}`} className="sub-issue" href={`https://github.com/${sub.otherRepo}/issues/${sub.number}`} target="_blank" rel="noreferrer" title="Dans un autre dépôt : s'ouvre sur GitHub">
+                                <span className={`badge ${sub.state === 'OPEN' ? 'open' : 'closed'}`} />
+                                <span className="mono muted">{sub.otherRepo}</span>#{sub.number} {sub.title}
+                            </a>
+                        ) : (
+                            <button key={sub.number} className="link sub-issue" onClick={() => onSelect?.(sub.number)}>
+                                <span className={`badge ${sub.state === 'OPEN' ? 'open' : 'closed'}`} />#{sub.number} {sub.title}
+                            </button>
+                        ),
+                    )}
                 </div>
             )}
             <div className="issue-body">

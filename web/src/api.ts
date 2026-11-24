@@ -7,6 +7,9 @@ import type {
     CleanupList,
     ExistingBranch,
     RunLinks,
+    InvestigationEnv,
+    InvestigationReport,
+    MemoryInfo,
     IssueDependency,
     IssueDetailResponse,
     IssueFilter,
@@ -23,6 +26,7 @@ import type {
     ReviewEvent,
     ReviewState,
     Run,
+    RunIntent,
     RunType,
     SessionHistoryItem,
     SkillInfo,
@@ -32,14 +36,67 @@ import type {
     WorktreeInfo,
 } from '../../shared/protocol';
 
+/** GET en cours, partagés : plusieurs composants qui demandent la même chose ne font qu'un appel. */
+const inflight = new Map<string, Promise<unknown>>();
+/**
+ * Lectures qui changent rarement, gardées un moment côté navigateur (profil du dépôt lu par l'en-tête,
+ * le menu Commandes, la palette et les boutons de merge ; skills ; sessions passées).
+ */
+const KEEP: Array<[RegExp, number]> = [
+    [/^\/api\/repos\/\d+\/profile$/, 60_000],
+    [/^\/api\/repos\/\d+\/skills$/, 60_000],
+    [/^\/api\/repos\/\d+\/sessions$/, 15_000],
+];
+const kept = new Map<string, { at: number; value: unknown }>();
+/** Incrémenté à chaque écriture : une lecture partie avant ne doit ni être partagée ni gardée. */
+let generation = 0;
+
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+    if (method !== 'GET') {
+        // Une écriture peut rendre fausse n'importe quelle lecture gardée ou en cours : on repart de zéro.
+        generation++;
+        kept.clear();
+        inflight.clear();
+        return send<T>(method, url, body);
+    }
+    const started = generation;
+    const ttl = KEEP.find(([pattern]) => pattern.test(url))?.[1];
+    const hit = kept.get(url);
+    if (ttl !== undefined && hit && Date.now() - hit.at < ttl) return hit.value as T;
+    const pending = inflight.get(url);
+    if (pending) return pending as Promise<T>;
+    const promise = send<T>(method, url)
+        .then((value) => {
+            if (ttl !== undefined && generation === started) kept.set(url, { at: Date.now(), value });
+            return value;
+        })
+        .finally(() => {
+            if (inflight.get(url) === promise) inflight.delete(url);
+        });
+    inflight.set(url, promise);
+    return promise;
+}
+
+/** Erreur d'un appel à l'API ; `protectedBranch` : commit & push refusé sur la branche de base ou d'intégration. */
+export class ApiError extends Error {
+    constructor(
+        message: string,
+        readonly status: number,
+        readonly protectedBranch?: string,
+    ) {
+        super(message);
+    }
+}
+
+async function send<T>(method: string, url: string, body?: unknown): Promise<T> {
     const response = await fetch(url, {
         method,
         headers: body !== undefined ? { 'content-type': 'application/json' } : {},
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
-    const payload = (await response.json().catch(() => ({}))) as T & { error?: string };
-    if (!response.ok) throw new Error(payload.error ?? `${method} ${url} : ${response.status}`);
+    const payload = (await response.json().catch(() => ({}))) as T & { error?: string; message?: string; protected?: string };
+    // Erreur levée côté serveur : Fastify met le texte dans `message` (et « Internal Server Error » dans `error`).
+    if (!response.ok) throw new ApiError(payload.message ?? payload.error ?? `${method} ${url} : ${response.status}`, response.status, payload.protected);
     return payload;
 }
 
@@ -62,6 +119,8 @@ export interface Profile {
     selfReviewSkill: string | null;
     instructions: string;
     bruno: string | null;
+    implementMcp: 'project' | 'none' | 'all';
+    commitModel: string;
 }
 
 export const api = {
@@ -104,6 +163,12 @@ export const api = {
 
     runs: () => request<Run[]>('GET', '/api/runs'),
     createRun: (body: { repoId?: number; cwd?: string; type?: RunType; title?: string; sessionId?: string }) => request<Run>('POST', '/api/runs', body),
+    intentChat: (repoId: number, body: { intent: RunIntent; env?: InvestigationEnv; issueNumber?: number; prNumber?: number }) => request<{ run: Run; draft: string }>('POST', `/api/repos/${repoId}/intent-chat`, body),
+    memory: (runId: number) => request<MemoryInfo>('GET', `/api/runs/${runId}/memory`),
+    openMemoryFile: (runId: number, path: string) => request<{ ok: true }>('POST', `/api/runs/${runId}/memory/open`, { path }),
+    report: (runId: number) => request<InvestigationReport>('GET', `/api/runs/${runId}/report`),
+    publishReport: (runId: number) => request<Run>('POST', `/api/runs/${runId}/report/publish`),
+    fixFromReport: (runId: number, opId?: string) => request<Run>('POST', `/api/runs/${runId}/report/fix`, { opId }),
     openRun: (id: number) => request<Run>('POST', `/api/runs/${id}/open`),
     closeRun: (id: number) => request<Run>('POST', `/api/runs/${id}/close`),
     renameRun: (id: number, title: string) => request<Run>('PATCH', `/api/runs/${id}`, { title }),
@@ -116,6 +181,9 @@ export const api = {
     command: (id: number, name: string, project?: string) => request<JobInfo>('POST', `/api/runs/${id}/command`, { name, ...(project ? { project } : {}) }),
     exec: (id: number, command: string, project?: string) => request<JobInfo>('POST', `/api/runs/${id}/exec`, { command, ...(project ? { project } : {}) }),
     install: (id: number) => request<JobInfo>('POST', `/api/runs/${id}/install`),
+    commitPush: (id: number, allowProtected = false) => request<JobInfo>('POST', `/api/runs/${id}/commit-push`, { allowProtected }),
+    resetRun: (id: number) => request<Run>('POST', `/api/runs/${id}/reset`),
+    sendJob: (id: string) => request<{ ok: true }>('POST', `/api/jobs/${id}/send`),
     stopJob: (jobId: string) => request<{ ok: true }>('POST', `/api/jobs/${jobId}/stop`),
     mergeBase: (id: number) => request<JobInfo>('POST', `/api/runs/${id}/merge-base`),
     mergeIntegration: (id: number) => request<JobInfo>('POST', `/api/runs/${id}/merge-integration`),

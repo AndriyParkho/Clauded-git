@@ -257,7 +257,7 @@ export function creationOrder(issues: SpecIssue[]): SpecIssue[] {
     return order;
 }
 
-async function ghCreateIssue(repo: Repo, title: string, body: string): Promise<{ number: number; url: string }> {
+export async function ghCreateIssue(repo: Repo, title: string, body: string): Promise<{ number: number; url: string }> {
     await mkdir(SPECS_DIR, { recursive: true });
     const bodyFile = join(SPECS_DIR, `.body-${randomUUID()}.md`);
     await writeFile(bodyFile, body);

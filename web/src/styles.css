@@ -294,6 +294,29 @@ kbd + kbd { margin-left: 3px; }
 .chat-actions .menu-items, .chat-actions .commands-menu .menu-items { left: auto; right: 0; }
 .statusbar-more .menu-items { top: auto; bottom: calc(100% + 6px); }
 .statusbar-more .menu-trigger { padding: 1px 6px; }
+/* Jauge de contexte : nombre de tokens bien visible, couleur selon le seuil de compaction. */
+.context-gauge .menu-trigger { padding: 1px 8px; }
+.context-gauge .menu-items { right: 0; left: auto; width: 360px; }
+.context-pill { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-soft); }
+.context-pill strong { font-size: 13px; font-variant-numeric: tabular-nums; }
+.context-bar { width: 44px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.context-bar > span { display: block; height: 100%; background: var(--ok); }
+.context-soon .context-bar > span, .context-advice.context-soon { background: var(--warn); }
+.context-now .context-bar > span, .context-advice.context-now { background: var(--ko); }
+.context-pill.context-soon strong { color: var(--warn); }
+.context-pill.context-now strong { color: var(--ko); }
+.context-detail { padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; white-space: normal; }
+.context-total strong { font-size: 15px; }
+.context-parts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.context-parts li { display: grid; grid-template-columns: 130px 1fr 52px; align-items: center; gap: 8px; }
+.context-part-bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.context-part-bar > span { display: block; height: 100%; background: var(--dim); }
+.context-part-bar > span.is-messages { background: var(--accent); }
+.context-part-tokens { text-align: right; }
+.context-files > div { padding: 2px 0 0 12px; overflow-wrap: anywhere; }
+.context-advice { padding: 6px 8px; border-radius: 6px; background: var(--line); color: var(--fg); }
+.context-advice.context-soon, .context-advice.context-now { color: #111; }
+.context-actions { display: flex; gap: 6px; }
 
 /* Diff */
 
@@ -485,13 +508,6 @@ kbd + kbd { margin-left: 3px; }
 
 /* Notices */
 .banner { position: fixed; top: 0; left: 50%; transform: translateX(-50%); background: var(--warn); color: var(--on-accent); font-weight: 600; padding: 4px 14px; border-radius: 0 0 var(--radius) var(--radius); font-size: 12px; z-index: 10; box-shadow: var(--shadow-md); }
-.notices { position: fixed; right: 12px; bottom: 12px; display: flex; flex-direction: column; gap: 6px; z-index: 10; max-width: 420px; }
-.notice {
-    background: var(--panel-2); color: var(--fg); border: 1px solid color-mix(in srgb, var(--ko) 60%, transparent); border-left: 3px solid var(--ko);
-    padding: 8px 12px; border-radius: var(--radius); font-size: 12.5px; cursor: pointer; white-space: pre-wrap; box-shadow: var(--shadow-lg);
-    animation: notice-in 180ms ease-out;
-}
-@keyframes notice-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* Pull requests */
 .panel.wide { width: 62%; }
@@ -873,6 +889,10 @@ button.has-error { border-color: var(--ko); }
 .branch-line { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .branch-line > span + span::before { content: '·'; margin-right: 8px; color: var(--faint); }
 .branch-name { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-soft); }
+.branch-line > span { white-space: nowrap; }
+.branch-line > .branch-name { flex: 0 1 auto; min-width: 60px; }
+/* Commit & push : icône et libellé sur une ligne, comme les déclencheurs de menu. */
+.chat-actions > .commit-push, .chat-actions > button, .report-bar > button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .ok-text { color: var(--ok); }
 
 /* ---------------------------------------------------------------------------------------------
@@ -940,3 +960,37 @@ body.resizing iframe { pointer-events: none; }
     .chat-body > .panel > .resize-handle { display: none; }
 }
 .wf-count { margin-left: 5px; }
+
+/* Menu « Ouvrir » sans Bruno configuré : pas de séparateur en bas. */
+.menu-items > .menu-separator:last-child { display: none; }
+
+/* ---------------------------------------------------------------------------------------------
+   Intention d'un chat : investigation (rouge en prod, ambre en prelive), question (bleu)
+   --------------------------------------------------------------------------------------------- */
+.intent-investigation.env-prod { --intent: var(--ko); }
+.intent-investigation.env-prelive { --intent: var(--warn); }
+.intent-question { --intent: var(--accent); }
+.rail-tab-icon[class*='intent-'] > .icon, .pane-bar-icon[class*='intent-'] > .icon, .chat-title[class*='intent-'] > .icon { color: var(--intent); }
+.intent-badge {
+    display: inline-flex; align-items: center; margin-left: 8px; padding: 1px 8px; border-radius: var(--radius-pill);
+    font-size: 11px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; vertical-align: middle;
+    color: var(--intent); border: 1px solid color-mix(in srgb, var(--intent) 45%, transparent); background: color-mix(in srgb, var(--intent) 12%, transparent);
+}
+.report-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.report-body { padding: 12px 16px; }
+.new-intent-form { display: flex; flex-direction: column; gap: 12px; }
+.new-intent-form label.field { display: flex; flex-direction: column; gap: 4px; }
+.new-intent-form .choices { display: flex; gap: 6px; flex-wrap: wrap; }
+.new-intent-form .choices button.on { border-color: var(--intent, var(--accent)); color: var(--intent, var(--accent)); }
+.new-intent-form .link-row { display: flex; gap: 6px; }
+.new-intent-form .link-row input { flex: 1; min-width: 0; }
+
+/* Fenêtre /memory */
+.memory-modal { background: var(--panel-2); border: 1px solid var(--line-strong); padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+.memory-scope { display: flex; flex-direction: column; gap: 4px; }
+.memory-scope-head { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+.memory-file { display: flex; gap: 10px; align-items: center; padding: 4px 0; border-top: 1px solid var(--line); }
+.memory-file.missing .memory-path { opacity: .55; }
+.memory-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.memory-state { white-space: nowrap; }
+.memory-note { font-size: 12px; }

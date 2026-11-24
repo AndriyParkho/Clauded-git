@@ -3,6 +3,7 @@ import { deleteBatchItem, getBatchItem, getRepo, listBatchItems, saveBatchItem }
 import { dependencyStatuses, launchOrder } from './dependencies.js';
 import { addBlockedByLinks, getIssue } from './github.js';
 import { implementIssue, reopenableImplementRun } from './implement.js';
+import { forgetRunLinks } from './links.js';
 import { Progress, SubProgress } from './progress.js';
 import { sessions } from './sessions/manager.js';
 import { occupying, queuedDetail, slotFree } from './slots.js';
@@ -216,6 +217,11 @@ export function cancelItem(repoId: number, issueNumber: number): void {
  */
 export function watchBatches(): void {
     sessions.on('run', (run) => {
+        // Fin de tour : les liens GitHub de l'onglet sont à relire (PR ouverte, push…).
+        if (run.repoId !== null && ['idle', 'closed', 'error', 'waiting'].includes(run.state)) {
+            const repo = getRepo(run.repoId);
+            if (repo) forgetRunLinks(repo, run);
+        }
         if (run.type !== 'implement' || !['idle', 'closed', 'error'].includes(run.state)) return;
         // Une place libérée profite aux files de tous les dépôts.
         for (const repoId of new Set(listBatchItems().filter((i) => i.state === 'waiting').map((i) => i.repoId))) scheduleCheck(repoId);

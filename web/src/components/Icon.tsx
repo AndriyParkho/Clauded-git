@@ -29,6 +29,9 @@ const PATHS = {
     split: 'M3 3h18v18H3z M12 3v18',
     maximize: 'M8 3H5a2 2 0 0 0-2 2v3 M21 8V5a2 2 0 0 0-2-2h-3 M3 16v3a2 2 0 0 0 2 2h3 M16 21h3a2 2 0 0 0 2-2v-3',
     refresh: 'M21 12a9 9 0 1 1-2.64-6.36L21 8 M21 3v5h-5',
+    investigate: 'M22 12h-4l-3 9L9 3l-3 9H2',
+    question: 'M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0 -18 0 M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3 M12 17h.01',
+    commit: 'M12 8a4 4 0 1 0 0 8a4 4 0 1 0 0-8M3 12h5M16 12h5',
 } as const;
 
 export type IconName = keyof typeof PATHS;

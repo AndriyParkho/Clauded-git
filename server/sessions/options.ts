@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { CanUseTool, Options, PermissionMode, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { CanUseTool, EffortLevel, HookCallbackMatcher, HookEvent, McpServerConfig, Options, PermissionMode, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { ImageAttachment } from '../../shared/protocol.js';
 
 type MessageParam = SDKUserMessage['message'];
@@ -54,12 +54,20 @@ export interface SessionParams {
     resume?: string | undefined;
     permissionMode?: PermissionMode | undefined;
     model?: string | undefined;
+    effort?: EffortLevel | undefined;
+    /**
+     * Seulement ces serveurs MCP (ni ceux du compte, ni des plugins, ni de claude.ai). Absent : tous
+     * les serveurs, comme Claude Code.
+     */
+    onlyMcp?: Record<string, McpServerConfig> | undefined;
     includePartialMessages?: boolean;
     maxTurns?: number;
     abortController?: AbortController;
     canUseTool: CanUseTool;
     /** Ajouté au prompt système Claude Code (consignes propres à l'app). */
     appendSystemPrompt?: string;
+    /** Hooks propres à l'onglet (garde-fous d'un chat en lecture seule). */
+    hooks?: Partial<Record<HookEvent, HookCallbackMatcher[]>> | undefined;
 }
 
 /**
@@ -80,6 +88,13 @@ export function sessionOptions(params: SessionParams): Options {
     };
     if (params.resume) options.resume = params.resume;
     if (params.model) options.model = params.model;
+    if (params.effort) options.effort = params.effort;
+    if (params.onlyMcp) {
+        options.mcpServers = params.onlyMcp;
+        options.strictMcpConfig = true;
+        options.settings = { disableClaudeAiConnectors: true };
+    }
+    if (params.hooks) options.hooks = params.hooks;
     if (params.maxTurns) options.maxTurns = params.maxTurns;
     if (params.abortController) options.abortController = params.abortController;
     return options;

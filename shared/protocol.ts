@@ -2,9 +2,49 @@
  * Types partagés entre le serveur et l'UI : modèle de données et messages WebSocket.
  * Ce fichier ne doit contenir que des types (il est importé en `import type` côté web).
  */
-import type { PermissionMode, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { EffortLevel, PermissionMode, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+
+export type { EffortLevel };
 
 export type RunType = 'chat' | 'implement' | 'pr' | 'merge' | 'spec';
+
+/**
+ * Intention d'un chat (`type: 'chat'`), qui règle son comportement : consigne, lecture seule, effort.
+ * - `investigation` : comprendre un problème (logs, métriques, comportement) en prod ou en prelive,
+ *   sans rien modifier ; se termine par un rapport, publié sur l'issue/la PR ou transformé en correctif.
+ * - `question` : comprendre le code, en lecture seule, effort bas.
+ * `null` : chat libre.
+ */
+export type RunIntent = 'investigation' | 'question';
+
+/** Environnement d'une investigation : choisit les serveurs MCP utilisables (`*-prelive` ou non). */
+export type InvestigationEnv = 'prod' | 'prelive';
+
+/** Un fichier de mémoire ou d'instructions d'un onglet (fenêtre `/memory`). */
+export interface MemoryFile {
+    path: string;
+    /** `user` : ~/.claude ; `project` : le dépôt ; `auto` : la mémoire automatique du projet. */
+    scope: 'user' | 'project' | 'auto';
+    exists: boolean;
+    /** Chargé dans le contexte de la session, avec son poids ; absent sinon (ou session pas encore ouverte). */
+    tokens?: number;
+}
+
+export interface MemoryInfo {
+    runId: number;
+    files: MemoryFile[];
+    /** Dossier de la mémoire automatique du projet. */
+    autoDir: string;
+}
+
+/** Rapport d'une investigation : fichier que la session écrit, publié ou non. */
+export interface InvestigationReport {
+    runId: number;
+    path: string;
+    /** `null` tant que la session ne l'a pas écrit. */
+    content: string | null;
+    updatedAt: string | null;
+}
 
 /**
  * État d'un onglet.
@@ -39,6 +79,8 @@ export interface Run {
     state: RunState;
     model: string | null;
     permissionMode: PermissionMode | null;
+    /** Niveau d'effort choisi pour l'onglet ; null : celui par défaut de l'app (`medium`). */
+    effort: EffortLevel | null;
     costUsd: number;
     issueNumber: number | null;
     /** PR relue dans un onglet `pr`. */
@@ -53,6 +95,12 @@ export interface Run {
     archived: boolean;
     /** Fichier de spec (chemin absolu) d'un onglet `spec`. */
     specPath: string | null;
+    /** Intention d'un chat (investigation, question) ; `null` : chat libre ou autre type d'onglet. */
+    intent: RunIntent | null;
+    /** Environnement d'une investigation. */
+    env: InvestigationEnv | null;
+    /** Où le rapport d'investigation a été publié (commentaire ou issue créée), s'il l'a été. */
+    reportUrl: string | null;
     createdAt: string;
     updatedAt: string;
 }
@@ -95,6 +143,8 @@ export interface ModelChoice {
     value: string;
     displayName: string;
     description: string;
+    /** Niveaux d'effort acceptés par le modèle (absent : pas d'effort réglable). */
+    efforts?: EffortLevel[];
 }
 
 /** Une fenêtre de limite du forfait : `utilization` en pourcentage (0-100), `resetsAt` en ISO 8601. */
@@ -105,10 +155,28 @@ export interface RateWindow {
 }
 
 /** Contexte utilisé par une session, après chaque tour. */
+/** Une part du contexte : prompt système, outils, MCP, CLAUDE.md et mémoire, skills, messages… */
+export interface ContextPart {
+    /** `system_prompt`, `system_tools`, `mcp_tools`, `mcp_instructions`, `custom_agents`, `memory_files`, `skills`, `messages`… */
+    id: string;
+    name: string;
+    tokens: number;
+}
+
 export interface UsageInfo {
     runId: number;
     at: string;
-    context?: { tokens: number; max: number; percent: number };
+    context?: {
+        tokens: number;
+        max: number;
+        percent: number;
+        /** Ce qui occupe le contexte, du plus gros au plus petit (hors espace libre et réserve de compaction). */
+        parts?: ContextPart[];
+        /** Fichiers d'instructions chargés (CLAUDE.md, mémoire) et leur poids. */
+        memoryFiles?: Array<{ path: string; tokens: number }>;
+        /** Seuil où Claude Code compacte tout seul, s'il le fait. */
+        autoCompactAt?: number;
+    };
 }
 
 /**
@@ -135,6 +203,8 @@ export interface IssueRef {
     number: number;
     title: string;
     state: 'OPEN' | 'CLOSED';
+    /** Sous-issue rangée dans un autre dépôt que sa parente (`owner/name`) : son numéro n'a pas de sens ici. */
+    otherRepo?: string;
 }
 
 /** Statut de l'issue dans un GitHub Project (champ « Status ») ; `order` = position de l'option dans le projet. */
@@ -397,6 +467,7 @@ export type ClientMessage =
     | { type: 'replay'; runId: number }
     | { type: 'setPermissionMode'; runId: number; mode: PermissionMode }
     | { type: 'setModel'; runId: number; model: string }
+    | { type: 'setEffort'; runId: number; effort: EffortLevel }
     | { type: 'mcp'; runId: number; action: McpAction; server?: string }
     | { type: 'refreshAccount'; runId?: never };
 
@@ -474,9 +545,10 @@ export interface BatchAnalysis {
     warnings: string[];
     /**
      * Issues sélectionnées qui sont elles-mêmes parentes (sous-issues ouvertes) : écartées du lot, à
-     * lancer à part. Leurs dépendances restent dans `dependencies`.
+     * lancer à part. Leurs dépendances restent dans `dependencies`. `openSubIssues` ne compte que
+     * celles du dépôt ; celles d'autres dépôts (`owner/name#n`) se lancent à la main, dans leur dépôt.
      */
-    parents: Array<{ number: number; title: string; openSubIssues: number[] }>;
+    parents: Array<{ number: number; title: string; openSubIssues: number[]; otherRepoSubIssues: string[] }>;
     /** Implémentations en parallèle : limite et places occupées. */
     slots: { max: number; busy: number };
     /** Issues qui ont déjà une branche avec du travail : écartées par défaut. */
